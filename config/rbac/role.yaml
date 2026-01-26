@@ -9,6 +9,7 @@ rules:
   resources:
   - apibindings
   - apiexports
+  - apiresourceschemas
   verbs:
   - get
   - list

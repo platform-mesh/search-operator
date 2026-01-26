@@ -60,7 +60,7 @@ spec:
               trackedResources:
                 description: |-
                   TrackedResources lists which resource types to index
-                  If empty, uses default set of resources
+                  If empty, uses a default set of resources
                 items:
                   description: TrackedResource defines a resource type to index
                   properties:

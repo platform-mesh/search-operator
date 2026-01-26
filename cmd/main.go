@@ -141,6 +141,17 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "SearchIndex")
 		os.Exit(1)
 	}
+
+	// Setup APIBinding controller for watching bindings across workspaces
+	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr)
+	if err != nil {
+		setupLog.Error(err, "unable to create APIBinding reconciler")
+		os.Exit(1)
+	}
+	if err := apiBindingReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
