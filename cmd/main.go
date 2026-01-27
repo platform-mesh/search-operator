@@ -5,8 +5,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
-	"os/signal"
-	"syscall"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -24,14 +22,15 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	// KCP imports
-	apisv1alpha1 "github.com/kcp-dev/kcp/sdk/apis/apis/v1alpha1"
-	kcpcorev1alpha1 "github.com/kcp-dev/kcp/sdk/apis/core/v1alpha1"
-	kcptenancyv1alpha1 "github.com/kcp-dev/kcp/sdk/apis/tenancy/v1alpha1"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
+	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
+	kcpcorev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
+	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	corev1alpha1 "github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/controller"
+	"github.com/platform-mesh/search-operator/internal/opensearch"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -58,6 +57,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 	var kcpKubeconfig string
+	var apiExportEndpointSliceName string
 	var enableHTTP2 bool
 	var maxConcurrentReconciles int
 	var tlsOpts []func(*tls.Config)
@@ -70,6 +70,8 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&kcpKubeconfig, "kcp-kubeconfig", "/etc/kcp/kubeconfig",
 		"Path to the KCP kubeconfig file.")
+	flag.StringVar(&apiExportEndpointSliceName, "api-export-endpoint-slice-name", "core.platform-mesh.io",
+		"Name of the APIExportEndpointSlice to use for the multicluster provider.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 1,
@@ -108,7 +110,7 @@ func main() {
 	}
 
 	// Create KCP multicluster provider using APIExport
-	provider, err := apiexport.New(kcpCfg, apiexport.Options{
+	provider, err := apiexport.New(kcpCfg, apiExportEndpointSliceName, apiexport.Options{
 		Scheme: scheme,
 	})
 	if err != nil {
@@ -142,8 +144,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize OpenSearch client if configured
+	var osClient *opensearch.Client
+	if osURL := os.Getenv("OPENSEARCH_URL"); osURL != "" {
+		setupLog.Info("initializing OpenSearch client", "url", osURL)
+		osClient, err = opensearch.NewClientFromEnv()
+		if err != nil {
+			setupLog.Error(err, "unable to create OpenSearch client")
+			os.Exit(1)
+		}
+
+		if err := osClient.Ping(context.Background()); err != nil {
+			setupLog.Error(err, "unable to connect to OpenSearch")
+			os.Exit(1)
+		}
+		setupLog.Info("OpenSearch client connected successfully")
+	} else {
+		setupLog.Info("OpenSearch not configured, workspace indexing disabled")
+	}
+
 	// Setup APIBinding controller for watching bindings across workspaces
-	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr)
+	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr, osClient)
 	if err != nil {
 		setupLog.Error(err, "unable to create APIBinding reconciler")
 		os.Exit(1)
@@ -163,22 +184,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
-	defer cancel()
-
-	go func() {
-		setupLog.Info("starting cluster provider")
-		if err := provider.Run(ctx, mgr); err != nil {
-			setupLog.Error(err, "cluster provider failed")
-			os.Exit(1)
-		}
-	}()
-
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+
 }
 
 // getKCPConfig loads the KCP kubeconfig from the specified path

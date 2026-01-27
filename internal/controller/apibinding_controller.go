@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"strings"
 
-	kcpv1alpha1 "github.com/kcp-dev/kcp/sdk/apis/apis/v1alpha1"
 	"github.com/kcp-dev/logicalcluster/v3"
+	kcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/builder"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/multicluster"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
@@ -20,6 +20,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"github.com/platform-mesh/search-operator/internal/subroutine"
 )
 
@@ -31,19 +32,28 @@ type APIBindingReconciler struct {
 }
 
 // NewAPIBindingReconciler creates a new APIBinding reconciler
-func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager) (*APIBindingReconciler, error) {
+// If osClient is nil, only the APIBindingWatcher subroutine is used (no indexing)
+func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClient *opensearch.Client) (*APIBindingReconciler, error) {
 	// Create a wildcard client for cross-workspace queries
 	allClient, err := GetAllClient(mcMgr.GetLocalManager().GetConfig(), mcMgr.GetLocalManager().GetScheme())
 	if err != nil {
 		return nil, err
 	}
 
+	// Build subroutines list
+	subroutines := []lifecyclesubroutine.Subroutine{
+		subroutine.NewAPIBindingWatcherSubroutine(mcMgr, allClient),
+	}
+
+	// Add workspace indexing subroutine if OpenSearch client is available
+	if osClient != nil {
+		subroutines = append(subroutines, subroutine.NewWorkspaceIndexingSubroutine(mcMgr, allClient, osClient))
+	}
+
 	return &APIBindingReconciler{
 		log:       log,
 		allClient: allClient,
-		mclifecycle: builder.NewBuilder("apibinding", "APIBindingReconciler", []lifecyclesubroutine.Subroutine{
-			subroutine.NewAPIBindingWatcherSubroutine(mcMgr, allClient),
-		}, log).
+		mclifecycle: builder.NewBuilder("apibinding", "APIBindingReconciler", subroutines, log).
 			WithConditionManagement().
 			BuildMultiCluster(mcMgr),
 	}, nil
