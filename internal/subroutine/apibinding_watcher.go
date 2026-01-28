@@ -16,15 +16,17 @@ import (
 
 // apiBindingWatcherSubroutine watches APIBinding resources across workspaces
 type apiBindingWatcherSubroutine struct {
-	mgr       mcmanager.Manager
-	allClient client.Client
+	mgr           mcmanager.Manager
+	allClient     client.Client
+	apiExportName string
 }
 
 // NewAPIBindingWatcherSubroutine creates a new APIBinding watcher subroutine
-func NewAPIBindingWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client) *apiBindingWatcherSubroutine {
+func NewAPIBindingWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, apiExportName string) *apiBindingWatcherSubroutine {
 	return &apiBindingWatcherSubroutine{
-		mgr:       mgr,
-		allClient: allClient,
+		mgr:           mgr,
+		allClient:     allClient,
+		apiExportName: apiExportName,
 	}
 }
 
@@ -45,6 +47,10 @@ func (s *apiBindingWatcherSubroutine) Finalizers(_ runtimeobject.RuntimeObject) 
 func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
 	binding := instance.(*kcpv1alpha1.APIBinding)
+
+	if !s.matchesExport(binding) {
+		return ctrl.Result{}, nil
+	}
 
 	// Get workspace from context
 	workspace, ok := mccontext.ClusterFrom(ctx)
@@ -82,6 +88,10 @@ func (s *apiBindingWatcherSubroutine) Finalize(ctx context.Context, instance run
 	log := logger.LoadLoggerFromContext(ctx)
 	binding := instance.(*kcpv1alpha1.APIBinding)
 
+	if !s.matchesExport(binding) {
+		return ctrl.Result{}, nil
+	}
+
 	// Get workspace from context
 	workspace, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
@@ -94,4 +104,14 @@ func (s *apiBindingWatcherSubroutine) Finalize(ctx context.Context, instance run
 		Msg("APIBinding being deleted")
 
 	return ctrl.Result{}, nil
+}
+
+func (s *apiBindingWatcherSubroutine) matchesExport(binding *kcpv1alpha1.APIBinding) bool {
+	if binding.Spec.Reference.Export == nil {
+		return false
+	}
+	if s.apiExportName == "" {
+		return true
+	}
+	return binding.Spec.Reference.Export.Name == s.apiExportName
 }

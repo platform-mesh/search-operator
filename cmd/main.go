@@ -164,7 +164,7 @@ func main() {
 	}
 
 	// Setup APIBinding controller for watching bindings across workspaces
-	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr, osClient)
+	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr, osClient, apiExportEndpointSliceName)
 	if err != nil {
 		setupLog.Error(err, "unable to create APIBinding reconciler")
 		os.Exit(1)

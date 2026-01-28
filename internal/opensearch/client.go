@@ -77,6 +77,7 @@ func NewClientFromEnv() (*Client, error) {
 
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.api.Info(ctx, nil)
+
 	return err
 }
 
@@ -123,7 +124,7 @@ func (c *Client) CreateIndex(ctx context.Context, indexName string, mapping stri
 
 // IndexExists checks if an index exists
 func (c *Client) IndexExists(ctx context.Context, indexName string) (bool, error) {
-	_, err := c.api.Indices.Exists(ctx, opensearchapi.IndicesExistsReq{
+	resp, err := c.api.Indices.Exists(ctx, opensearchapi.IndicesExistsReq{
 		Indices: []string{indexName},
 	})
 	if err != nil {
@@ -133,11 +134,16 @@ func (c *Client) IndexExists(ctx context.Context, indexName string) (bool, error
 				return false, nil
 			}
 		}
-
-		if strings.Contains(err.Error(), "404") {
-			return false, nil
-		}
 		return false, fmt.Errorf("failed to check index existence: %w", err)
+	}
+	if resp == nil {
+		return false, fmt.Errorf("failed to check index existence: empty response")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return false, fmt.Errorf("failed to check index existence: status %s", resp.Status())
 	}
 	return true, nil
 }
@@ -171,7 +177,7 @@ func (c *Client) DeleteIndex(ctx context.Context, indexName string) error {
 func (c *Client) IndexDocument(ctx context.Context, indexName, docID string, document interface{}) error {
 	log := logger.LoadLoggerFromContext(ctx)
 
-	_, err := c.api.Index(
+	resp, err := c.api.Index(
 		ctx,
 		opensearchapi.IndexReq{
 			Index:      indexName,
@@ -187,8 +193,9 @@ func (c *Client) IndexDocument(ctx context.Context, indexName, docID string, doc
 	}
 
 	log.Debug().
-		Str("index", indexName).
-		Str("docID", docID).
+		Str("index", resp.Index).
+		Str("docID", resp.ID).
+		Str("result", resp.Result).
 		Msg("indexed document")
 
 	return nil
@@ -198,7 +205,7 @@ func (c *Client) IndexDocument(ctx context.Context, indexName, docID string, doc
 func (c *Client) DeleteDocument(ctx context.Context, indexName, docID string) error {
 	log := logger.LoadLoggerFromContext(ctx)
 
-	_, err := c.api.Document.Delete(ctx, opensearchapi.DocumentDeleteReq{
+	resp, err := c.api.Document.Delete(ctx, opensearchapi.DocumentDeleteReq{
 		Index:      indexName,
 		DocumentID: docID,
 	})
@@ -207,8 +214,9 @@ func (c *Client) DeleteDocument(ctx context.Context, indexName, docID string) er
 	}
 
 	log.Debug().
-		Str("index", indexName).
+		Str("index", resp.Index).
 		Str("docID", docID).
+		Str("result", resp.Result).
 		Msg("deleted document")
 
 	return nil

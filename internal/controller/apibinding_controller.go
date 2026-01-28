@@ -33,7 +33,7 @@ type APIBindingReconciler struct {
 
 // NewAPIBindingReconciler creates a new APIBinding reconciler
 // If osClient is nil, only the APIBindingWatcher subroutine is used (no indexing)
-func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClient *opensearch.Client) (*APIBindingReconciler, error) {
+func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string) (*APIBindingReconciler, error) {
 	// Create a wildcard client for cross-workspace queries
 	allClient, err := GetAllClient(mcMgr.GetLocalManager().GetConfig(), mcMgr.GetLocalManager().GetScheme())
 	if err != nil {
@@ -42,12 +42,12 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClie
 
 	// Build subroutines list
 	subroutines := []lifecyclesubroutine.Subroutine{
-		subroutine.NewAPIBindingWatcherSubroutine(mcMgr, allClient),
+		subroutine.NewAPIBindingWatcherSubroutine(mcMgr, allClient, apiExportName),
 	}
 
 	// Add workspace indexing subroutine if OpenSearch client is available
 	if osClient != nil {
-		subroutines = append(subroutines, subroutine.NewWorkspaceIndexingSubroutine(mcMgr, allClient, osClient))
+		subroutines = append(subroutines, subroutine.NewWorkspaceIndexingSubroutine(mcMgr, allClient, osClient, apiExportName))
 	}
 
 	return &APIBindingReconciler{
@@ -62,6 +62,7 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClie
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apibindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apiexports,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apiresourceschemas,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.platform-mesh.io,resources=accountinfos,verbs=get;list;watch
 
 // Reconcile handles APIBinding reconciliation
 func (r *APIBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {

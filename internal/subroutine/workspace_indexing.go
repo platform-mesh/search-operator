@@ -28,23 +28,27 @@ const (
 	WorkspacesIndexName = "platform-mesh-workspaces"
 	// SearchIndexFinalizer is the finalizer for workspace indexing
 	SearchIndexFinalizer = "search.platform-mesh.io/indexed"
+	// fgaAccountObjectType matches the account-operator default object type
+	fgaAccountObjectType = "core_platform-mesh_io_account"
 )
 
 // WorkspaceIndexingSubroutine indexes workspace/account data into OpenSearch
 // when APIBindings are observed. It uses AccountInfo to get organization and
 // account context for proper permission scoping.
 type WorkspaceIndexingSubroutine struct {
-	mgr       mcmanager.Manager
-	allClient client.Client
-	osClient  *opensearch.Client
+	mgr           mcmanager.Manager
+	allClient     client.Client
+	osClient      *opensearch.Client
+	apiExportName string
 }
 
 // NewWorkspaceIndexingSubroutine creates a new workspace indexing subroutine
-func NewWorkspaceIndexingSubroutine(mgr mcmanager.Manager, allClient client.Client, osClient *opensearch.Client) *WorkspaceIndexingSubroutine {
+func NewWorkspaceIndexingSubroutine(mgr mcmanager.Manager, allClient client.Client, osClient *opensearch.Client, apiExportName string) *WorkspaceIndexingSubroutine {
 	return &WorkspaceIndexingSubroutine{
-		mgr:       mgr,
-		allClient: allClient,
-		osClient:  osClient,
+		mgr:           mgr,
+		allClient:     allClient,
+		osClient:      osClient,
+		apiExportName: apiExportName,
 	}
 }
 
@@ -56,7 +60,14 @@ func (s *WorkspaceIndexingSubroutine) GetName() string {
 }
 
 // Finalizers returns the finalizers this subroutine manages
-func (s *WorkspaceIndexingSubroutine) Finalizers(_ runtimeobject.RuntimeObject) []string {
+func (s *WorkspaceIndexingSubroutine) Finalizers(instance runtimeobject.RuntimeObject) []string {
+	binding, ok := instance.(*kcpv1alpha1.APIBinding)
+	if !ok {
+		return nil
+	}
+	if !s.matchesExport(binding) {
+		return nil
+	}
 	return []string{SearchIndexFinalizer}
 }
 
@@ -64,6 +75,10 @@ func (s *WorkspaceIndexingSubroutine) Finalizers(_ runtimeobject.RuntimeObject) 
 func (s *WorkspaceIndexingSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
 	binding := instance.(*kcpv1alpha1.APIBinding)
+
+	if !s.matchesExport(binding) {
+		return ctrl.Result{}, nil
+	}
 
 	// Get workspace cluster name from context
 	clusterName, ok := mccontext.ClusterFrom(ctx)
@@ -106,7 +121,7 @@ func (s *WorkspaceIndexingSubroutine) Process(ctx context.Context, instance runt
 	}
 
 	// Create workspace document from AccountInfo
-	doc := s.createWorkspaceDocument(clusterName, &accountInfo, binding)
+	doc := s.createWorkspaceDocument(clusterName, &accountInfo)
 
 	// Ensure the index exists
 	if err := s.osClient.CreateIndex(ctx, WorkspacesIndexName, workspacesIndexMapping); err != nil {
@@ -138,6 +153,10 @@ func (s *WorkspaceIndexingSubroutine) Finalize(ctx context.Context, instance run
 	log := logger.LoadLoggerFromContext(ctx)
 	binding := instance.(*kcpv1alpha1.APIBinding)
 
+	if !s.matchesExport(binding) {
+		return ctrl.Result{}, nil
+	}
+
 	// Get workspace cluster name from context
 	clusterName, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
@@ -168,7 +187,6 @@ func (s *WorkspaceIndexingSubroutine) Finalize(ctx context.Context, instance run
 func (s *WorkspaceIndexingSubroutine) createWorkspaceDocument(
 	clusterName string,
 	accountInfo *accountv1alpha1.AccountInfo,
-	binding *kcpv1alpha1.APIBinding,
 ) *opensearch.WorkspaceDocument {
 	doc := opensearch.NewWorkspaceDocument(
 		clusterName,
@@ -217,21 +235,48 @@ func (s *WorkspaceIndexingSubroutine) createWorkspaceDocument(
 
 // addPermissionTuples adds OpenFGA tuples to the document for permission-aware search
 func (s *WorkspaceIndexingSubroutine) addPermissionTuples(doc *opensearch.WorkspaceDocument, accountInfo *accountv1alpha1.AccountInfo) {
-	accountType := fmt.Sprintf("core_platform-mesh_io_%s", accountInfo.Spec.Account.Type)
-	objectID := fmt.Sprintf("%s:%s", accountType, doc.ClusterName)
+	objectID := s.fgaObjectID(accountInfo.Spec.Account, doc.ClusterName)
+	if objectID == "" {
+		return
+	}
 
 	// Add organization-level access tuple
 	// Members of the organization can access this workspace
-	orgObject := fmt.Sprintf("core_platform-mesh_io_org:%s", accountInfo.Spec.Organization.GeneratedClusterId)
-	doc.AddPermission(orgObject+"#member", "member", objectID)
-	doc.AddPermission(orgObject+"#owner", "owner", objectID)
+	orgObject := s.fgaObjectID(accountInfo.Spec.Organization, accountInfo.Spec.Organization.GeneratedClusterId)
+	if orgObject != "" {
+		doc.AddPermission(orgObject+"#member", "member", objectID)
+		doc.AddPermission(orgObject+"#owner", "owner", objectID)
+	}
 
 	// If this is an account (not an org), add account-level tuples
 	if accountInfo.Spec.Account.Type == accountv1alpha1.AccountTypeAccount {
-		accountObject := fmt.Sprintf("core_platform-mesh_io_account:%s", accountInfo.Spec.Account.GeneratedClusterId)
-		doc.AddPermission(accountObject+"#member", "member", objectID)
-		doc.AddPermission(accountObject+"#owner", "owner", objectID)
+		doc.AddPermission(objectID+"#member", "member", objectID)
+		doc.AddPermission(objectID+"#owner", "owner", objectID)
 	}
+}
+
+func (s *WorkspaceIndexingSubroutine) matchesExport(binding *kcpv1alpha1.APIBinding) bool {
+	if binding.Spec.Reference.Export == nil {
+		return false
+	}
+	if s.apiExportName == "" {
+		return true
+	}
+	return binding.Spec.Reference.Export.Name == s.apiExportName
+}
+
+func (s *WorkspaceIndexingSubroutine) fgaObjectID(location accountv1alpha1.AccountLocation, fallbackCluster string) string {
+	origin := location.OriginClusterId
+	if origin == "" {
+		origin = location.GeneratedClusterId
+	}
+	if origin == "" {
+		origin = fallbackCluster
+	}
+	if origin == "" || location.Name == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:%s/%s", fgaAccountObjectType, origin, location.Name)
 }
 
 // workspacesIndexMapping defines the OpenSearch mapping for the workspaces index
