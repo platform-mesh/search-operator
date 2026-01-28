@@ -54,7 +54,6 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClie
 		log:       log,
 		allClient: allClient,
 		mclifecycle: builder.NewBuilder("apibinding", "APIBindingReconciler", subroutines, log).
-			WithConditionManagement().
 			BuildMultiCluster(mcMgr),
 	}, nil
 }
