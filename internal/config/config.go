@@ -16,3 +16,7 @@ type Config struct {
 		Password string `mapstructure:"opensearch-password"`
 	} `mapstructure:",squash"`
 }
+
+func (c Config) InitializerName() string {
+	return "search"
+}
