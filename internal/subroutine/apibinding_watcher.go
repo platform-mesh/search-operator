@@ -3,11 +3,14 @@ package subroutine
 import (
 	"context"
 
+	kcpapisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	kcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -76,6 +79,29 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 				Str("resource", resource.Resource).
 				Msg("bound resource available")
 		}
+	}
+
+	apiExportCluster, err := s.mgr.GetCluster(ctx, binding.Status.APIExportClusterName)
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(err, true, true)
+	}
+
+	var apiExport kcpapisv1alpha1.APIExport
+	err = apiExportCluster.GetClient().Get(ctx, types.NamespacedName{Name: binding.Spec.Reference.Export.Name}, &apiExport)
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(err, true, true)
+	}
+
+	switch apiExport.Name {
+	case "core.platform-mesh.io":
+		// TODO: get information about CRDs from the APIExport to index some metadata
+		for _, pc := range apiExport.Spec.PermissionClaims {
+			gvr := schema.GroupVersionResource{Group: pc.Group, Resource: pc.Resource}
+			// TODO write into index
+		}
+	case "search.platform-mesh.io":
+		// TODO: get information about index to write in
+	default:
 	}
 
 	// TODO Create SearchIndex or update tracked resources based on bindings
