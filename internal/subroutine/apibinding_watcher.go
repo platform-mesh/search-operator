@@ -96,7 +96,7 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 	case "core.platform-mesh.io":
 		// TODO: get information about CRDs from the APIExport to index some metadata
 		for _, pc := range apiExport.Spec.PermissionClaims {
-			gvr := schema.GroupVersionResource{Group: pc.Group, Resource: pc.Resource}
+			_ = schema.GroupVersionResource{Group: pc.Group, Resource: pc.Resource}
 			// TODO write into index
 		}
 	case "search.platform-mesh.io":

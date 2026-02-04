@@ -164,12 +164,12 @@ func main() {
 	}
 
 	// Setup APIBinding controller for watching bindings across workspaces
-	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr, osClient, apiExportEndpointSliceName)
+	indexableResourceReconciler, err := controller.NewIndexableResource(log, mgr, osClient, apiExportEndpointSliceName)
 	if err != nil {
 		setupLog.Error(err, "unable to create APIBinding reconciler")
 		os.Exit(1)
 	}
-	if err := apiBindingReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+	if err := indexableResourceReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
 		os.Exit(1)
 	}
