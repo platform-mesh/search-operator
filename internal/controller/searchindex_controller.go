@@ -7,13 +7,15 @@ import (
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/multicluster"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/logger"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/platform-mesh/search-operator/api/v1alpha1"
+	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"github.com/platform-mesh/search-operator/internal/subroutine"
 )
 
@@ -24,14 +26,12 @@ type SearchIndexReconciler struct {
 }
 
 // NewSearchIndexReconciler creates a new SearchIndex reconciler
-func NewSearchIndexReconciler(log *logger.Logger, mcMgr mcmanager.Manager) *SearchIndexReconciler {
+func NewSearchIndexReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClient *opensearch.Client) *SearchIndexReconciler {
 	return &SearchIndexReconciler{
 		log: log,
 		mclifecycle: builder.NewBuilder("searchindex", "SearchIndexReconciler", []lifecyclesubroutine.Subroutine{
-			subroutine.NewIndexLifecycleSubroutine(mcMgr),
-		}, log).
-			WithConditionManagement().
-			BuildMultiCluster(mcMgr),
+			subroutine.NewIndexLifecycleSubroutine(mcMgr, osClient),
+		}, log).BuildMultiCluster(mcMgr),
 	}
 }
 
@@ -45,10 +45,22 @@ func NewSearchIndexReconciler(log *logger.Logger, mcMgr mcmanager.Manager) *Sear
 // Reconcile handles SearchIndex reconciliation
 func (r *SearchIndexReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	ctxWithCluster := mccontext.WithCluster(ctx, req.ClusterName)
-	return r.mclifecycle.Reconcile(ctxWithCluster, req, &corev1alpha1.SearchIndex{})
+	return r.mclifecycle.Reconcile(ctxWithCluster, req, newSearchIndexResource())
 }
 
 // SetupWithManager sets up the controller with the multicluster Manager.
 func (r *SearchIndexReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, evp ...predicate.Predicate) error {
-	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "searchindex", &corev1alpha1.SearchIndex{}, "", r, r.log, evp...)
+	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "searchindex", newSearchIndexResource(), "", r, r.log, evp...)
+}
+
+var searchIndexGVK = schema.GroupVersionKind{
+	Group:   "core.platform-mesh.io",
+	Version: "v1alpha1",
+	Kind:    "SearchIndex",
+}
+
+func newSearchIndexResource() *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(searchIndexGVK)
+	return obj
 }

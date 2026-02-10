@@ -2,30 +2,40 @@ package subroutine
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"time"
 
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrl "sigs.k8s.io/controller-runtime"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	corev1alpha1 "github.com/platform-mesh/search-operator/api/v1alpha1"
+	"github.com/platform-mesh/search-operator/internal/opensearch"
 )
 
 // IndexLifecycleSubroutine manages the lifecycle of OpenSearch indices
 type IndexLifecycleSubroutine struct {
-	mgr mcmanager.Manager
+	osClient *opensearch.Client
 }
 
 // NewIndexLifecycleSubroutine creates a new index lifecycle subroutine
-func NewIndexLifecycleSubroutine(mgr mcmanager.Manager) *IndexLifecycleSubroutine {
+func NewIndexLifecycleSubroutine(mgr mcmanager.Manager, osClient *opensearch.Client) *IndexLifecycleSubroutine {
 	return &IndexLifecycleSubroutine{
-		mgr: mgr,
+		osClient: osClient,
 	}
 }
 
 var _ lifecyclesubroutine.Subroutine = &IndexLifecycleSubroutine{}
+
+const (
+	searchIndexFinalizer = "search.platform-mesh.io/index"
+	orgsWorkspacePath    = "root:orgs"
+)
 
 // GetName returns the subroutine name
 func (s *IndexLifecycleSubroutine) GetName() string {
@@ -33,24 +43,118 @@ func (s *IndexLifecycleSubroutine) GetName() string {
 }
 
 // Finalizers returns the finalizers this subroutine manages
-func (s *IndexLifecycleSubroutine) Finalizers(_ runtimeobject.RuntimeObject) []string {
-	// TODO: handle "search.platform-mesh.io/index" finalizer
-	return nil
+func (s *IndexLifecycleSubroutine) Finalizers(instance runtimeobject.RuntimeObject) []string {
+	if !isSearchIndexResource(instance) {
+		return nil
+	}
+	return []string{searchIndexFinalizer}
 }
 
 // Process handles the reconciliation logic
 func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
-	searchIndex := instance.(*corev1alpha1.SearchIndex)
+	searchIndex, ok := instance.(*unstructured.Unstructured)
+	if !ok {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("expected *unstructured.Unstructured, got %T", instance), false, false)
+	}
+	if !isSearchIndexResource(searchIndex) {
+		return ctrl.Result{}, nil
+	}
+
+	workspaceName, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing cluster in multicluster context"), true, false)
+	}
+	targetWorkspace := resolveIndexWorkspace(workspaceName, searchIndex.GetName())
+
+	indexPrefix, found, err := unstructured.NestedString(searchIndex.Object, "spec", "indexPrefix")
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.indexPrefix: %w", err), false, false)
+	}
+	if !found || indexPrefix == "" {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing required spec.indexPrefix"), false, false)
+	}
+
+	paused, _, err := unstructured.NestedBool(searchIndex.Object, "spec", "paused")
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.paused: %w", err), false, false)
+	}
+
+	trackedResources, _, err := unstructured.NestedSlice(searchIndex.Object, "spec", "trackedResources")
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.trackedResources: %w", err), false, false)
+	}
+
+	indexName := buildIndexName(indexPrefix, targetWorkspace)
+	currentStatusIndex, _, err := unstructured.NestedString(searchIndex.Object, "status", "indexName")
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read status.indexName: %w", err), false, false)
+	}
 
 	log.Info().
-		Str("name", searchIndex.Name).
-		Str("indexPrefix", searchIndex.Spec.IndexPrefix).
-		Bool("paused", searchIndex.Spec.Paused).
-		Int("trackedResources", len(searchIndex.Spec.TrackedResources)).
+		Str("name", searchIndex.GetName()).
+		Str("reconcileWorkspace", workspaceName).
+		Str("targetWorkspace", targetWorkspace).
+		Str("indexPrefix", indexPrefix).
+		Str("indexName", indexName).
+		Bool("paused", paused).
+		Int("trackedResources", len(trackedResources)).
 		Msg("processing SearchIndex")
 
-	// TODO: create/update OpenSearch index based, index documents
+	if paused {
+		if currentStatusIndex != indexName {
+			if err := unstructured.SetNestedField(searchIndex.Object, indexName, "status", "indexName"); err != nil {
+				return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.indexName: %w", err), true, false)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if s.osClient == nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("OpenSearch client not configured"), true, false)
+	}
+
+	exists, err := s.osClient.IndexExists(ctx, indexName)
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to check index existence: %w", err), true, true)
+	}
+
+	created := false
+	if !exists {
+		if err := s.osClient.CreateIndex(ctx, indexName, ""); err != nil {
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to create index %q: %w", indexName, err), true, true)
+		}
+		created = true
+	}
+
+	statusUpdated := false
+	if currentStatusIndex != indexName {
+		if err := unstructured.SetNestedField(searchIndex.Object, indexName, "status", "indexName"); err != nil {
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.indexName: %w", err), true, false)
+		}
+		statusUpdated = true
+	}
+
+	if created {
+		now := time.Now().UTC().Format(time.RFC3339)
+		if err := unstructured.SetNestedField(searchIndex.Object, now, "status", "lastSyncTime"); err != nil {
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.lastSyncTime: %w", err), true, false)
+		}
+		if err := unstructured.SetNestedField(searchIndex.Object, int64(0), "status", "documentCount"); err != nil {
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.documentCount: %w", err), true, false)
+		}
+		statusUpdated = true
+	}
+
+	if statusUpdated {
+		log.Info().
+			Str("name", searchIndex.GetName()).
+			Str("reconcileWorkspace", workspaceName).
+			Str("targetWorkspace", targetWorkspace).
+			Str("indexName", indexName).
+			Bool("created", created).
+			Msg("updated SearchIndex status")
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -58,13 +162,105 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 // Finalize handles cleanup when the resource is being deleted
 func (s *IndexLifecycleSubroutine) Finalize(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
-	searchIndex := instance.(*corev1alpha1.SearchIndex)
+	searchIndex, ok := instance.(*unstructured.Unstructured)
+	if !ok {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("expected *unstructured.Unstructured, got %T", instance), false, false)
+	}
+	if !isSearchIndexResource(searchIndex) {
+		return ctrl.Result{}, nil
+	}
+	if s.osClient == nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("OpenSearch client not configured during SearchIndex finalization"), true, false)
+	}
+
+	workspaceName, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing cluster in multicluster context during finalization"), true, false)
+	}
+	targetWorkspace := resolveIndexWorkspace(workspaceName, searchIndex.GetName())
+
+	indexName, _, err := unstructured.NestedString(searchIndex.Object, "status", "indexName")
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read status.indexName: %w", err), false, false)
+	}
+	if indexName == "" {
+		indexPrefix, _, specErr := unstructured.NestedString(searchIndex.Object, "spec", "indexPrefix")
+		if specErr != nil {
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.indexPrefix during finalization: %w", specErr), false, false)
+		}
+		indexName = buildIndexName(indexPrefix, targetWorkspace)
+	}
 
 	log.Info().
-		Str("name", searchIndex.Name).
+		Str("name", searchIndex.GetName()).
+		Str("reconcileWorkspace", workspaceName).
+		Str("targetWorkspace", targetWorkspace).
+		Str("indexName", indexName).
 		Msg("finalizing SearchIndex")
 
-	// TODO: delete OpenSearch index
+	if err := s.osClient.DeleteIndex(ctx, indexName); err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to delete index %q: %w", indexName, err), true, true)
+	}
 
 	return ctrl.Result{}, nil
+}
+
+func isSearchIndexResource(instance runtimeobject.RuntimeObject) bool {
+	uns, ok := instance.(*unstructured.Unstructured)
+	if !ok {
+		return false
+	}
+	return uns.GetKind() == "SearchIndex" &&
+		uns.GetAPIVersion() == "core.platform-mesh.io/v1alpha1"
+}
+
+func buildIndexName(indexPrefix, workspaceName string) string {
+	prefix := sanitizeIndexNamePart(indexPrefix)
+	if prefix == "" {
+		prefix = "search"
+	}
+	workspace := sanitizeIndexNamePart(workspaceName)
+	if workspace == "" {
+		workspace = "workspace"
+	}
+	indexName := fmt.Sprintf("%s-%s", prefix, workspace)
+	if len(indexName) > 255 {
+		indexName = indexName[:255]
+	}
+	return strings.Trim(indexName, "-")
+}
+
+// resolveIndexWorkspace derives the virtual workspace that should own the index.
+// In root:orgs, each SearchIndex resource name represents one onboarded org workspace.
+func resolveIndexWorkspace(reconcileWorkspace, resourceName string) string {
+	if reconcileWorkspace == orgsWorkspacePath && resourceName != "" {
+		return fmt.Sprintf("%s:%s", orgsWorkspacePath, resourceName)
+	}
+	return reconcileWorkspace
+}
+
+func sanitizeIndexNamePart(value string) string {
+	value = strings.ToLower(value)
+
+	var b strings.Builder
+	b.Grow(len(value))
+	lastWasDash := false
+
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastWasDash = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastWasDash = false
+		default:
+			if !lastWasDash {
+				b.WriteByte('-')
+				lastWasDash = true
+			}
+		}
+	}
+
+	return strings.Trim(b.String(), "-")
 }

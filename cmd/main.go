@@ -137,13 +137,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup SearchIndex controller using lifecycle manager pattern
-	if err := controller.NewSearchIndexReconciler(log, mgr).
-		SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "SearchIndex")
-		os.Exit(1)
-	}
-
 	// Initialize OpenSearch client if configured
 	var osClient *opensearch.Client
 	if osURL := os.Getenv("OPENSEARCH_URL"); osURL != "" {
@@ -163,6 +156,14 @@ func main() {
 		setupLog.Info("OpenSearch not configured, workspace indexing disabled")
 	}
 
+	// Setup SearchIndex controller using lifecycle manager pattern
+	if err := controller.NewSearchIndexReconciler(log, mgr, osClient).
+		SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "SearchIndex")
+		os.Exit(1)
+	}
+
+	/*
 	// Setup APIBinding controller for watching bindings across workspaces
 	indexableResourceReconciler, err := controller.NewIndexableResource(log, mgr, osClient, apiExportEndpointSliceName)
 	if err != nil {
@@ -174,6 +175,8 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	 */
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

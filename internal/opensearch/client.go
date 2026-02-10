@@ -134,6 +134,11 @@ func (c *Client) IndexExists(ctx context.Context, indexName string) (bool, error
 				return false, nil
 			}
 		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+
 		return false, fmt.Errorf("failed to check index existence: %w", err)
 	}
 	if resp == nil {
