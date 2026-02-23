@@ -14,6 +14,7 @@ import (
 	"github.com/opensearch-project/opensearch-go/v4/opensearchapi"
 	"github.com/opensearch-project/opensearch-go/v4/opensearchutil"
 	"github.com/platform-mesh/golang-commons/logger"
+	"github.com/platform-mesh/search-operator/internal/config"
 )
 
 // Client wraps the OpenSearch client with convenience methods
@@ -59,18 +60,32 @@ func NewClient(cfg Config) (*Client, error) {
 
 // NewClientFromEnv creates a new OpenSearch client using environment variables
 // OPENSEARCH_URL, OPENSEARCH_USERNAME, OPENSEARCH_PASSWORD
-func NewClientFromEnv() (*Client, error) {
+func NewClientFromEnv(cfg *config.Config) (*Client, error) {
+	appConfig, err := config.NewFromEnv()
+	if err != nil {
+		fmt.Printf("Error loading env file: %v\n", err)
+		os.Exit(1)
+	}
 	url := os.Getenv("OPENSEARCH_URL")
 	if url == "" {
-		url = "https://localhost:9200"
+		url = appConfig.OpenSearch.URL
 	}
+	fmt.Printf("url: %s", url)
 
 	insecure := os.Getenv("OPENSEARCH_INSECURE") == "true"
+	username := os.Getenv("OPENSEARCH_USERNAME")
+	if username == "" {
+		username = appConfig.OpenSearch.Username
+	}
+	password := os.Getenv("OPENSEARCH_PASSWORD")
+	if password == "" {
+		password = appConfig.OpenSearch.Password
+	}
 
 	return NewClient(Config{
 		URL:                url,
-		Username:           os.Getenv("OPENSEARCH_USERNAME"),
-		Password:           os.Getenv("OPENSEARCH_PASSWORD"),
+		Username:           username,
+		Password:           password,
 		InsecureSkipVerify: insecure,
 	})
 }

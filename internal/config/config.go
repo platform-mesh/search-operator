@@ -1,22 +1,33 @@
 package config
 
+import (
+	"github.com/vrischmann/envconfig"
+)
+
 // Config holds the configuration for the search-operator
 type Config struct {
 	KCP struct {
 		// Kubeconfig is the path to the KCP kubeconfig file
-		Kubeconfig string `mapstructure:"kcp-kubeconfig" default:"/api-kubeconfig/kubeconfig"`
+		Kubeconfig string `mapstructure:"kcp-kubeconfig" envconfig:"default=/api-kubeconfig/kubeconfig"`
 	} `mapstructure:",squash"`
 
 	OpenSearch struct {
 		// URL is the OpenSearch endpoint URL
-		URL string `mapstructure:"opensearch-url"`
+		URL string `mapstructure:"opensearch-url"  envconfig:"default=https://opensearch.portal.localhost:8443"`
 		// Username for OpenSearch authentication
-		Username string `mapstructure:"opensearch-username"`
+		Username string `mapstructure:"opensearch-username" envconfig:"default=admin"`
 		// Password for OpenSearch authentication
-		Password string `mapstructure:"opensearch-password"`
+		Password string `mapstructure:"opensearch-password" envconfig:"default=admin"`
 	} `mapstructure:",squash"`
 }
 
 func (c Config) InitializerName() string {
 	return "search"
+}
+
+// NewFromEnv creates a Config from environment values
+func NewFromEnv() (*Config, error) {
+	appConfig := Config{}
+	err := envconfig.Init(&appConfig)
+	return &appConfig, err
 }

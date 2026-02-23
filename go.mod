@@ -9,6 +9,7 @@ require (
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 	github.com/platform-mesh/account-operator v0.8.3
 	github.com/platform-mesh/golang-commons v0.9.23
+	github.com/vrischmann/envconfig v1.4.1
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0
 	sigs.k8s.io/controller-runtime v0.22.4
