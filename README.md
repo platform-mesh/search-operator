@@ -195,6 +195,22 @@ is manually re-applied afterwards.
 
 More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
 
+## Troubleshooting
+
+### Certificate validation failed
+
+Observed error:
+```sh
+ERROR   setup   unable to create cluster provider       {"error": "failed to determine if *v1alpha1.APIExportEndpointSlice is namespaced: failed to get restmapping: failed to get server groups: Get \"https://kcp.api.portal.dev.local:8443/clusters/root:platform-mesh-system/api\": tls: failed to verify certificate: x509: certificate is valid for dc5347f84a4903940bb922272f6578ad.2685dce311ccafdcd8b2ac92ae59becc.traefik.default, not kcp.api.portal.dev.local"}
+main.main
+```
+
+Fix by switching to another workspace and switch back to root:
+```sh
+kubectl ws use platform-mesh-system
+kubectl ws use :root
+```
+
 ## License
 
 Copyright 2026.
