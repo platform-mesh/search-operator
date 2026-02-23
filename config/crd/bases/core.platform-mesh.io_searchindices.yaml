@@ -54,6 +54,19 @@ spec:
                   workspace
                 pattern: ^[a-z][a-z0-9-]*$
                 type: string
+              numberOfReplicas:
+                default: 1
+                format: int32
+                type: integer
+              numberOfShards:
+                default: 1
+                format: int32
+                type: integer
+              organizationClusterID:
+                description: OrganizationClusterID immutable KCP cluster ID (LogicalCluster's
+                  kcp.io/cluster annotation); used as OpenSearch index name
+                pattern: ^[a-z][a-z0-9-]*$
+                type: string
               paused:
                 description: Paused stops all indexing when true
                 type: boolean
@@ -80,6 +93,9 @@ spec:
                 type: array
             required:
             - indexPrefix
+            - numberOfReplicas
+            - numberOfShards
+            - organizationClusterID
             type: object
           status:
             description: Status defines the observed state of SearchIndex

@@ -26,6 +26,17 @@ type SearchIndexSpec struct {
 	// +required
 	IndexPrefix string `json:"indexPrefix"`
 
+	// OrganizationClusterID immutable KCP cluster ID (LogicalCluster's kcp.io/cluster annotation); used as OpenSearch index name
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9-]*$`
+	// +required
+	OrganizationClusterID string `json:"organizationClusterID"`
+
+	// +kubebuilder:default=1
+	NumberOfShards int32 `json:"numberOfShards"`
+
+	// +kubebuilder:default=1
+	NumberOfReplicas int32 `json:"numberOfReplicas"`
+
 	// TrackedResources lists which resource types to index
 	// If empty, uses a default set of resources
 	// +optional
