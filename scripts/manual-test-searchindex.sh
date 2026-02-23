@@ -2,27 +2,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-KCP_KUBECONFIG="${KCP_KUBECONFIG:-../../hackthon/helm-charts/local-setup/.secret/kcp/admin.kubeconfig}"
-KCP_SERVER="${KCP_SERVER:-https://localhost:8443/clusters/root:orgs}"
-SEARCHINDEX_NAME="${SEARCHINDEX_NAME:-test}"
-INDEX_PREFIX="${INDEX_PREFIX:-pm}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-120}"
-OPENSEARCH_URL="${OPENSEARCH_URL:-https://opensearch.portal.localhost:8443}"
-OPENSEARCH_USERNAME="${OPENSEARCH_USERNAME:-admin}"
-OPENSEARCH_PASSWORD="${OPENSEARCH_PASSWORD:-admin}"
-OPENSEARCH_INSECURE="${OPENSEARCH_INSECURE:-true}"
-
-RUN_OPERATOR=false
-CLEANUP=false
-VERIFY_OPENSEARCH=true
-
-export OPENSEARCH_URL
-export OPENSEARCH_USERNAME
-export OPENSEARCH_PASSWORD
-export OPENSEARCH_INSECURE
+set -a # automatically export all variables from .env
+source .env.searchindex-test
+set +a
 
 usage() {
   cat <<'EOF'
@@ -120,6 +102,9 @@ fi
 echo "Testing SearchIndex in workspace server: ${KCP_SERVER}"
 echo "Searchindex name: ${SEARCHINDEX_NAME}"
 echo "Index prefix: ${INDEX_PREFIX}"
+
+echo $KUBECONFIG
+# Updates the KCP path in the local kubeconfig
 
 echo "Checking SearchIndex API availability..."
 if ! kubectl api-resources --server="${KCP_SERVER}" | grep "searchindices"; then
