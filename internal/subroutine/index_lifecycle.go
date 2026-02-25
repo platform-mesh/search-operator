@@ -57,7 +57,7 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 	log := logger.LoadLoggerFromContext(ctx)
 	searchIndex, ok := instance.(*v1alpha1.SearchIndex)
 	if !ok {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("expected *unstructured.Unstructured, got %T", instance), false, false)
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("expected *v1alpha1.SearchIndex, got %T", instance), false, false)
 	}
 	if !isSearchIndexResource(searchIndex) {
 		return ctrl.Result{}, nil

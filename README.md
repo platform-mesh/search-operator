@@ -195,21 +195,41 @@ is manually re-applied afterwards.
 
 More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
 
-## Troubleshooting
+## Test Locally
 
-### Certificate validation failed
+Copy the `.env.example` to `.env` and replace urls:
 
-Observed error:
 ```sh
-ERROR   setup   unable to create cluster provider       {"error": "failed to determine if *v1alpha1.APIExportEndpointSlice is namespaced: failed to get restmapping: failed to get server groups: Get \"https://kcp.api.portal.dev.local:8443/clusters/root:platform-mesh-system/api\": tls: failed to verify certificate: x509: certificate is valid for dc5347f84a4903940bb922272f6578ad.2685dce311ccafdcd8b2ac92ae59becc.traefik.default, not kcp.api.portal.dev.local"}
-main.main
+cp .env.example .env
 ```
 
-Fix by switching to another workspace and switch back to root:
+run the operator to reconcile the searchindex APIResource:
+
 ```sh
-kubectl ws use platform-mesh-system
-kubectl ws use :root
+go run cmd/main.go
 ```
+
+test by manually adding a searchindex resource:
+
+```sh
+export KUBCONFIG=<path to an KCP admin kubeconfig>
+kubectl apply -f ./scripts/searchindex-test-resource.yaml --server="https://localhost:8443/clusters/root:orgs"
+```
+
+observe logs of successful reconciliation:
+
+```sh
+# In shell:
+searchindex.core.platform-mesh.io/testindex5 created
+# In Operator
+{"level":"info","service":"...","operator":"searchindex","controller":"SearchIndexReconciler","name":"<index name>","namespace":"","reconcile_id":"...","time":"...","caller":"...","message":"start reconcile"}
+```
+
+check if the url with your new index name in the path returns the desired values:
+
+`https://opensearch.portal.localhost:8443/<index name>`
+
+observe 
 
 ## License
 
