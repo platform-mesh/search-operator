@@ -8,6 +8,7 @@ import (
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -45,18 +46,16 @@ func (s *IndexableResourceWatcherSubroutine) Finalizers(_ runtimeobject.RuntimeO
 
 // Process handles the reconciliation logic
 func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
-	log := logger.LoadLoggerFromContext(ctx)
-	ws := instance.(*tenancyv1alpha1.Workspace)
+	_ = logger.LoadLoggerFromContext(ctx)
+	_ = instance.(*unstructured.Unstructured) // This must be one of the preconfigured GVKs
 
-	// Get index resource for current organization
+	// Assuming everything we reconcile here is in a workspace under :root:orgs:some-org
 
-	// Write Workspace to this index
+	// Get searchindex for current org
 
-	log.Info().
-		Str("name", ws.Name).
-		Msg("observed IndexableResource")
+	// Check if current resource is enabled in this index i.e.: the resource is contained in SearchIndex.Spec.IndexableResources
 
-	// TODO Create SearchIndex or update tracked resources based on bindings
+	// Index current APIResource in OpenSearch to index retrieved
 
 	return ctrl.Result{}, nil
 }
