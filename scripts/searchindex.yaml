@@ -1,6 +1,0 @@
-apiVersion: core.platform-mesh.io/v1alpha1
-kind: SearchIndex
-metadata:
-  name: testindex3
-spec:
-  indexPrefix: "pm-"

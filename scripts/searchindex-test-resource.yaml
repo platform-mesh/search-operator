@@ -1,0 +1,11 @@
+apiVersion: core.platform-mesh.io/v1alpha1
+kind: SearchIndex
+metadata:
+  name: testindex5
+spec:
+  indexPrefix: "platform-mesh-orgs"
+  trackedResources: []
+  numberOfShards: 1
+  numberOfReplicas: 0
+  organizationClusterID: "flo-test"
+  

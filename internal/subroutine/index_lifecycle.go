@@ -10,6 +10,8 @@ import (
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
+	"github.com/platform-mesh/search-operator/api/v1alpha1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrl "sigs.k8s.io/controller-runtime"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -53,7 +55,7 @@ func (s *IndexLifecycleSubroutine) Finalizers(instance runtimeobject.RuntimeObje
 // Process handles the reconciliation logic
 func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
-	searchIndex, ok := instance.(*unstructured.Unstructured)
+	searchIndex, ok := instance.(*v1alpha1.SearchIndex)
 	if !ok {
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("expected *unstructured.Unstructured, got %T", instance), false, false)
 	}
@@ -61,52 +63,48 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		return ctrl.Result{}, nil
 	}
 
-	workspaceName, ok := mccontext.ClusterFrom(ctx)
-	if !ok {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing cluster in multicluster context"), true, false)
+	organizationClusterID := searchIndex.Spec.OrganizationClusterID
+	if organizationClusterID == "" {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing required spec.organizationClusterID"), false, false)
 	}
-	targetWorkspace := resolveIndexWorkspace(workspaceName, searchIndex.GetName())
+	targetWorkspace := resolveIndexWorkspace(organizationClusterID, searchIndex.GetName())
 
-	indexPrefix, found, err := unstructured.NestedString(searchIndex.Object, "spec", "indexPrefix")
-	if err != nil {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.indexPrefix: %w", err), false, false)
-	}
-	if !found || indexPrefix == "" {
+	indexPrefix := searchIndex.Spec.IndexPrefix
+	if indexPrefix == "" {
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing required spec.indexPrefix"), false, false)
 	}
 
-	paused, _, err := unstructured.NestedBool(searchIndex.Object, "spec", "paused")
-	if err != nil {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.paused: %w", err), false, false)
-	}
+	paused := searchIndex.Spec.Paused
 
-	trackedResources, _, err := unstructured.NestedSlice(searchIndex.Object, "spec", "trackedResources")
-	if err != nil {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.trackedResources: %w", err), false, false)
+	trackedResources := searchIndex.Spec.TrackedResources
+	if len(trackedResources) == 0 {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("this organization specifies no resources to add to index"), false, false)
 	}
 
 	indexName := buildIndexName(indexPrefix, targetWorkspace)
-	currentStatusIndex, _, err := unstructured.NestedString(searchIndex.Object, "status", "indexName")
-	if err != nil {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read status.indexName: %w", err), false, false)
+	numberShards := searchIndex.Spec.NumberOfShards
+	if numberShards <= 0 {
+		numberShards = 1
+	}
+
+	numReplicas := searchIndex.Spec.NumberOfReplicas
+	if numReplicas < 0 {
+		numReplicas = 0
 	}
 
 	log.Info().
 		Str("name", searchIndex.GetName()).
-		Str("reconcileWorkspace", workspaceName).
+		Str("reconcileWorkspace", organizationClusterID).
 		Str("targetWorkspace", targetWorkspace).
 		Str("indexPrefix", indexPrefix).
 		Str("indexName", indexName).
 		Bool("paused", paused).
 		Int("trackedResources", len(trackedResources)).
+		Int32("numberOfShards", numberShards).
+		Int32("numberOfReplicas", numReplicas).
 		Msg("processing SearchIndex")
 
 	if paused {
-		if currentStatusIndex != indexName {
-			if err := unstructured.SetNestedField(searchIndex.Object, indexName, "status", "indexName"); err != nil {
-				return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.indexName: %w", err), true, false)
-			}
-		}
 		return ctrl.Result{}, nil
 	}
 
@@ -127,32 +125,16 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		created = true
 	}
 
-	statusUpdated := false
-	if currentStatusIndex != indexName {
-		if err := unstructured.SetNestedField(searchIndex.Object, indexName, "status", "indexName"); err != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.indexName: %w", err), true, false)
-		}
-		statusUpdated = true
-	}
-
 	if created {
-		now := time.Now().UTC().Format(time.RFC3339)
-		if err := unstructured.SetNestedField(searchIndex.Object, now, "status", "lastSyncTime"); err != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.lastSyncTime: %w", err), true, false)
-		}
-		if err := unstructured.SetNestedField(searchIndex.Object, int64(0), "status", "documentCount"); err != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to set status.documentCount: %w", err), true, false)
-		}
-		statusUpdated = true
-	}
-
-	if statusUpdated {
+		searchIndex.Status.LastSyncTime = &v1.Time{Time: time.Now()}
 		log.Info().
 			Str("name", searchIndex.GetName()).
-			Str("reconcileWorkspace", workspaceName).
+			Str("reconcileWorkspace", organizationClusterID).
 			Str("targetWorkspace", targetWorkspace).
 			Str("indexName", indexName).
 			Bool("created", created).
+			Int32("numberOfShards", numberShards).
+			Int32("numberOfReplicas", numReplicas).
 			Msg("updated SearchIndex status")
 	}
 

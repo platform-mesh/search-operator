@@ -45,11 +45,6 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClie
 		subroutine.NewAPIBindingWatcherSubroutine(mcMgr, allClient, apiExportName),
 	}
 
-	// Add workspace indexing subroutine if OpenSearch client is available
-	if osClient != nil {
-		subroutines = append(subroutines, subroutine.NewWorkspaceIndexingSubroutine(mcMgr, allClient, osClient, apiExportName))
-	}
-
 	return &APIBindingReconciler{
 		log:       log,
 		allClient: allClient,
