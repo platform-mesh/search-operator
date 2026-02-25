@@ -3,7 +3,6 @@ package subroutine
 import (
 	"context"
 
-	kcpapisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	kcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
@@ -86,7 +85,7 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 		return ctrl.Result{}, errors.NewOperatorError(err, true, true)
 	}
 
-	var apiExport kcpapisv1alpha1.APIExport
+	var apiExport kcpv1alpha1.APIExport
 	err = apiExportCluster.GetClient().Get(ctx, types.NamespacedName{Name: binding.Spec.Reference.Export.Name}, &apiExport)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, true)

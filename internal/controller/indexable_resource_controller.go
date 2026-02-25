@@ -3,11 +3,11 @@ package controller
 import (
 	"context"
 
-	tenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/builder"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/multicluster"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/logger"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -36,7 +36,7 @@ func NewIndexableResource(log *logger.Logger, mcMgr mcmanager.Manager, osClient 
 
 	// Build subroutines list
 	subroutines := []lifecyclesubroutine.Subroutine{
-		subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, apiExportName),
+		subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, osClient, apiExportName),
 	}
 
 	return &IndexableResourceReconciler{
@@ -53,10 +53,16 @@ func NewIndexableResource(log *logger.Logger, mcMgr mcmanager.Manager, osClient 
 // Reconcile handles IndexableResource reconciliation
 func (r *IndexableResourceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	ctxWithCluster := mccontext.WithCluster(ctx, req.ClusterName)
-	return r.mclifecycle.Reconcile(ctxWithCluster, req, &tenancyv1alpha1.Workspace{})
+	return r.mclifecycle.Reconcile(ctxWithCluster, req, newIndexableResource())
 }
 
 // SetupWithManager sets up the controller with the multicluster Manager.
 func (r *IndexableResourceReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, evp ...predicate.Predicate) error {
-	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "indexableResourceReconciler", &tenancyv1alpha1.Workspace{}, "", r, r.log, evp...)
+	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "indexableResourceReconciler", newIndexableResource(), "", r, r.log, evp...)
+}
+
+func newIndexableResource() *unstructured.Unstructured {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(searchIndexGVK)
+	return obj
 }
