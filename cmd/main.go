@@ -159,7 +159,7 @@ func main() {
 	setupLog.Info("OpenSearch client connected successfully")
 
 	// Setup SearchIndex controller using lifecycle manager pattern
-	if err := controller.NewSearchIndexReconciler(log, mgr, osClient).
+	if err := controller.NewSearchIndexReconciler(log, mgr, osClient, appConfig.OpenSearch.IndexNamePrefix).
 		SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SearchIndex")
 		os.Exit(1)

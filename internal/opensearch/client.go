@@ -3,11 +3,13 @@ package opensearch
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/opensearch-project/opensearch-go/v4"
@@ -96,8 +98,14 @@ func (c *Client) Ping(ctx context.Context) error {
 	return err
 }
 
-// CreateIndex creates an index if it doesn't exist
-func (c *Client) CreateIndex(ctx context.Context, indexName string, mapping string) error {
+// IndexSettings contains index-level shard and replica settings.
+type IndexSettings struct {
+	NumberOfShards   int32
+	NumberOfReplicas int32
+}
+
+// CreateIndex creates an index if it doesn't exist and applies initial settings.
+func (c *Client) CreateIndex(ctx context.Context, indexName string, numberOfShards, numberOfReplicas int32, mapping string) error {
 	log := logger.LoadLoggerFromContext(ctx)
 
 	exists, err := c.IndexExists(ctx, indexName)
@@ -110,10 +118,27 @@ func (c *Client) CreateIndex(ctx context.Context, indexName string, mapping stri
 		return nil
 	}
 
-	var body io.Reader
-	if mapping != "" {
-		body = strings.NewReader(mapping)
+	createBody := map[string]interface{}{
+		"settings": map[string]interface{}{
+			"index": map[string]int32{
+				"number_of_shards":   numberOfShards,
+				"number_of_replicas": numberOfReplicas,
+			},
+		},
 	}
+	if mapping != "" {
+		var mappingsPayload interface{}
+		if err := json.Unmarshal([]byte(mapping), &mappingsPayload); err != nil {
+			return fmt.Errorf("failed to parse index mapping payload: %w", err)
+		}
+		createBody["mappings"] = mappingsPayload
+	}
+
+	rawBody, err := json.Marshal(createBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal create index body: %w", err)
+	}
+	body := io.Reader(strings.NewReader(string(rawBody)))
 
 	_, err = c.api.Indices.Create(
 		ctx,
@@ -134,6 +159,104 @@ func (c *Client) CreateIndex(ctx context.Context, indexName string, mapping stri
 	}
 
 	log.Info().Str("index", indexName).Msg("created index")
+	return nil
+}
+
+// GetIndexSettings returns current number_of_shards and number_of_replicas for an index.
+func (c *Client) GetIndexSettings(ctx context.Context, indexName string) (IndexSettings, error) {
+	resp, err := c.api.Indices.Settings.Get(ctx, &opensearchapi.SettingsGetReq{
+		Indices: []string{indexName},
+		Settings: []string{
+			"index.number_of_shards",
+			"index.number_of_replicas",
+		},
+	})
+	if err != nil {
+		return IndexSettings{}, fmt.Errorf("failed to get settings for index %s: %w", indexName, err)
+	}
+	if resp == nil {
+		return IndexSettings{}, fmt.Errorf("failed to get settings for index %s: empty response", indexName)
+	}
+
+	indexEntry, ok := resp.Indices[indexName]
+	if !ok {
+		return IndexSettings{}, fmt.Errorf("settings for index %s not found in response", indexName)
+	}
+
+	var parsed struct {
+		Index map[string]string `json:"index"`
+	}
+	if err := json.Unmarshal(indexEntry.Settings, &parsed); err != nil {
+		return IndexSettings{}, fmt.Errorf("failed to decode settings for index %s: %w", indexName, err)
+	}
+
+	shardsStr, ok := parsed.Index["number_of_shards"]
+	if !ok {
+		return IndexSettings{}, fmt.Errorf("number_of_shards missing in settings for index %s", indexName)
+	}
+	replicasStr, ok := parsed.Index["number_of_replicas"]
+	if !ok {
+		return IndexSettings{}, fmt.Errorf("number_of_replicas missing in settings for index %s", indexName)
+	}
+
+	shardsValue, err := strconv.ParseInt(shardsStr, 10, 32)
+	if err != nil {
+		return IndexSettings{}, fmt.Errorf("invalid number_of_shards value %q for index %s: %w", shardsStr, indexName, err)
+	}
+	replicasValue, err := strconv.ParseInt(replicasStr, 10, 32)
+	if err != nil {
+		return IndexSettings{}, fmt.Errorf("invalid number_of_replicas value %q for index %s: %w", replicasStr, indexName, err)
+	}
+
+	return IndexSettings{
+		NumberOfShards:   int32(shardsValue),
+		NumberOfReplicas: int32(replicasValue),
+	}, nil
+}
+
+// UpdateIndexReplicas updates number_of_replicas for an existing index.
+func (c *Client) UpdateIndexReplicas(ctx context.Context, indexName string, numberOfReplicas int32) error {
+	bodyJSON := fmt.Sprintf(`{"index":{"number_of_replicas":%d}}`, numberOfReplicas)
+	_, err := c.api.Indices.Settings.Put(ctx, opensearchapi.SettingsPutReq{
+		Indices: []string{indexName},
+		Body:    strings.NewReader(bodyJSON),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update number_of_replicas for index %s: %w", indexName, err)
+	}
+
+	return nil
+}
+
+// EnsureAliases ensures that all provided aliases exist for the given index.
+func (c *Client) EnsureAliases(ctx context.Context, indexName string, aliases []string) error {
+	log := logger.LoadLoggerFromContext(ctx)
+
+	seen := make(map[string]struct{}, len(aliases))
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" || alias == indexName {
+			continue
+		}
+		if _, exists := seen[alias]; exists {
+			continue
+		}
+		seen[alias] = struct{}{}
+
+		_, err := c.api.Indices.Alias.Put(ctx, opensearchapi.AliasPutReq{
+			Indices: []string{indexName},
+			Alias:   alias,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to ensure alias %q for index %q: %w", alias, indexName, err)
+		}
+
+		log.Debug().
+			Str("index", indexName).
+			Str("alias", alias).
+			Msg("ensured alias for index")
+	}
+
 	return nil
 }
 

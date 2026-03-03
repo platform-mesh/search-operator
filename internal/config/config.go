@@ -18,6 +18,8 @@ type Config struct {
 		Username string `mapstructure:"opensearch-username" envconfig:"default=admin"`
 		// Password for OpenSearch authentication
 		Password string `mapstructure:"opensearch-password" envconfig:"default=admin"`
+		// IndexNamePrefix is a static prefix for all operator-managed index names and aliases.
+		IndexNamePrefix string `mapstructure:"opensearch-index-name-prefix" envconfig:"default=pm"`
 	} `mapstructure:",squash"`
 }
 
