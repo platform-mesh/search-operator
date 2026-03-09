@@ -69,6 +69,27 @@ func (r *APIBindingReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcur
 	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "apibinding", &kcpv1alpha1.APIBinding{}, "", r, r.log, evp...)
 }
 
+// GetScopedClient creates a client scoped to a specific logical cluster path (e.g. "root:orgs")
+func GetScopedClient(cfg *rest.Config, scheme *runtime.Scheme, clusterPath string) (client.Client, error) {
+	scopedCfg := rest.CopyConfig(cfg)
+	parsed, err := url.Parse(scopedCfg.Host)
+	if err != nil {
+		return nil, err
+	}
+	requestPath := logicalcluster.NewPath(clusterPath).RequestPath()
+	parts := strings.Split(parsed.Path, "clusters")
+	if len(parts) > 0 {
+		parsed.Path, err = url.JoinPath(parts[0], requestPath)
+	} else {
+		parsed.Path, err = url.JoinPath("/", requestPath)
+	}
+	if err != nil {
+		return nil, err
+	}
+	scopedCfg.Host = parsed.String()
+	return client.New(scopedCfg, client.Options{Scheme: scheme})
+}
+
 // GetAllClient creates a client that can query across all workspaces using the wildcard cluster
 func GetAllClient(config *rest.Config, scheme *runtime.Scheme) (client.Client, error) {
 	allCfg := rest.CopyConfig(config)

@@ -28,15 +28,23 @@ type IndexableResourceReconciler struct {
 // NewIndexableResourceReconciler creates a new IndexableResource reconciler
 // If osClient is nil, only the IndexableResourceWatcher subroutine is used (no indexing)
 func NewIndexableResource(log *logger.Logger, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string) (*IndexableResourceReconciler, error) {
+	localMgr := mcMgr.GetLocalManager()
+
 	// Create a wildcard client for cross-workspace queries
-	allClient, err := GetAllClient(mcMgr.GetLocalManager().GetConfig(), mcMgr.GetLocalManager().GetScheme())
+	allClient, err := GetAllClient(localMgr.GetConfig(), localMgr.GetScheme())
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a client scoped to root:orgs for Workspace lookups
+	orgsClient, err := GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
 	if err != nil {
 		return nil, err
 	}
 
 	// Build subroutines list
 	subroutines := []lifecyclesubroutine.Subroutine{
-		subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, osClient, apiExportName),
+		subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName),
 	}
 
 	return &IndexableResourceReconciler{

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
@@ -13,6 +14,7 @@ import (
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -23,15 +25,17 @@ import (
 type IndexableResourceWatcherSubroutine struct {
 	mgr           mcmanager.Manager
 	allClient     client.Client
+	orgsClient    client.Client // scoped to root:orgs for Workspace lookups
 	osClient      *opensearch.Client
 	apiExportName string
 }
 
 // NewIndexableResourceWatcherSubroutine creates a new IndexableResource watcher subroutine
-func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, osClient *opensearch.Client, apiExportName string) *IndexableResourceWatcherSubroutine {
+func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string) *IndexableResourceWatcherSubroutine {
 	return &IndexableResourceWatcherSubroutine{
 		mgr:           mgr,
 		allClient:     allClient,
+		orgsClient:    orgsClient,
 		osClient:      osClient,
 		apiExportName: apiExportName,
 	}
@@ -56,6 +60,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
+	// ClusterID is not sufficient
 	clusterName, err := s.getClusterFromContext(ctx)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
@@ -74,6 +79,8 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// Get by path naming convention of current resource if exists, logical cluster otherwise (API export needs permission claim for logical cluster)
+
 	// Maybe not the best idea to first calculate index and only then decide whether to reconcile. We should handle this statically if possible.
 	if !s.isResourceTracked(resource, searchIndex) {
 		log.Debug().
@@ -82,7 +89,53 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{}, nil
 	}
 
-	// TODO: handle updates to SearchIndex (e.g. tracked resources changed, or paused)
+	indexName := searchIndex.Status.IndexName
+	if indexName == "" {
+		log.Debug().Msg("SearchIndex has no IndexName yet, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	docID := s.generateDocumentID(resource, clusterName)
+	gvk := resource.GroupVersionKind()
+
+	doc := opensearch.NewResourceDocument(
+		docID,
+		resource.GetKind(),
+		resource.GetName(),
+		resource.GetNamespace(),
+		clusterName,
+		clusterName,
+	)
+	doc.APIGroup = gvk.Group
+	doc.APIVersion = gvk.Version
+	doc.OrganizationName = orgName
+	doc.OrganizationID = searchIndex.Spec.OrganizationClusterID
+	doc.Labels = resource.GetLabels()
+	doc.Annotations = resource.GetAnnotations()
+
+	if accountName, err := extractAccountFromKCPPath(clusterName); err == nil {
+		doc.AccountName = accountName
+	}
+
+	if spec, ok, _ := unstructured.NestedMap(resource.Object, "spec"); ok {
+		doc.Spec = spec
+	}
+	if status, ok, _ := unstructured.NestedMap(resource.Object, "status"); ok {
+		doc.Status = status
+	}
+
+	if err := s.osClient.IndexDocument(ctx, indexName, docID, doc); err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(
+			fmt.Errorf("failed to index document %s: %w", docID, err), true, false,
+		)
+	}
+
+	log.Info().
+		Str("docID", docID).
+		Str("index", indexName).
+		Str("kind", resource.GetKind()).
+		Msg("indexed document")
+
 	return ctrl.Result{}, nil
 }
 
@@ -102,9 +155,40 @@ func (s *IndexableResourceWatcherSubroutine) extractOrgFromKCPPath(clusterName s
 	return parts[2], nil
 }
 
+// extractAccountFromKCPPath extracts the account name from a KCP path like "root:orgs:acme:account-1"
+func extractAccountFromKCPPath(clusterName string) (string, error) {
+	parts := strings.Split(clusterName, ":")
+	if len(parts) < 4 {
+		return "", fmt.Errorf("path %q does not contain an account segment", clusterName)
+	}
+	return parts[3], nil
+}
+
 func (s *IndexableResourceWatcherSubroutine) getSearchIndexForOrg(ctx context.Context, orgName string) (*v1alpha1.SearchIndex, error) {
-	// TODO
-	return nil, fmt.Errorf("getSearchIndexForOrg not implemented yet")
+	log := logger.LoadLoggerFromContext(ctx)
+
+	// Look up the Workspace resource in root:orgs to get the immutable cluster ID
+	workspace := &kcptenancyv1alpha1.Workspace{}
+	if err := s.orgsClient.Get(ctx, types.NamespacedName{Name: orgName}, workspace); err != nil {
+		return nil, fmt.Errorf("failed to get Workspace %q: %w", orgName, err)
+	}
+
+	// Look up the SearchIndex by org name using the wildcard client
+	searchIndex := &v1alpha1.SearchIndex{}
+	if err := s.allClient.Get(ctx, types.NamespacedName{Name: orgName}, searchIndex); err != nil {
+		return nil, fmt.Errorf("failed to get SearchIndex %q: %w", orgName, err)
+	}
+
+	// Validate cluster ID consistency
+	if searchIndex.Spec.OrganizationClusterID != workspace.Spec.Cluster {
+		log.Warn().
+			Str("org", orgName).
+			Str("searchIndexClusterID", searchIndex.Spec.OrganizationClusterID).
+			Str("workspaceCluster", workspace.Spec.Cluster).
+			Msg("SearchIndex OrganizationClusterID does not match Workspace.Spec.Cluster")
+	}
+
+	return searchIndex, nil
 }
 
 func (s *IndexableResourceWatcherSubroutine) isResourceTracked(
