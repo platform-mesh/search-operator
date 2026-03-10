@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/vrischmann/envconfig"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // Config holds the configuration for the search-operator
@@ -9,6 +10,10 @@ type Config struct {
 	KCP struct {
 		// Kubeconfig is the path to the KCP kubeconfig file
 		Kubeconfig string `mapstructure:"kcp-kubeconfig" envconfig:"default=/api-kubeconfig/kubeconfig"`
+	} `mapstructure:",squash"`
+
+	SearchableResource struct {
+		Resources []schema.GroupVersionKind `mapstructure:"resources" envconfig:"default=core/v1/Pod,apps/v1/Deployment"`
 	} `mapstructure:",squash"`
 
 	OpenSearch struct {

@@ -138,15 +138,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	appConfig, err := config.NewFromEnv()
+	cfg, err := config.NewFromEnv()
 	if err != nil {
 		setupLog.Info("OpenSearch not configured, workspace indexing disabled")
 	}
 
 	// Initialize OpenSearch client if configured
 	var osClient *opensearch.Client
-	setupLog.Info("initializing OpenSearch client", "url", appConfig.OpenSearch.URL)
-	osClient, err = opensearch.NewClientFromEnv(appConfig)
+	setupLog.Info("initializing OpenSearch client", "url", cfg.OpenSearch.URL)
+	osClient, err = opensearch.NewClientFromEnv(cfg)
 	if err != nil {
 		setupLog.Error(err, "unable to create OpenSearch client")
 		os.Exit(1)
@@ -159,26 +159,23 @@ func main() {
 	setupLog.Info("OpenSearch client connected successfully")
 
 	// Setup SearchIndex controller using lifecycle manager pattern
-	if err := controller.NewSearchIndexReconciler(log, mgr, osClient, appConfig.OpenSearch.IndexNamePrefix).
+	if err := controller.NewSearchIndexReconciler(log, mgr, osClient, cfg.OpenSearch.IndexNamePrefix).
 		SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SearchIndex")
 		os.Exit(1)
 	}
 
-	/*
-		// Setup APIBinding controller for watching bindings across workspaces
-		indexableResourceReconciler, err := controller.NewIndexableResource(log, mgr, osClient, apiExportEndpointSliceName)
-		if err != nil {
-			setupLog.Error(err, "unable to create APIBinding reconciler")
-			os.Exit(1)
-		}
-		if err := indexableResourceReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
-			os.Exit(1)
-		}
-		// +kubebuilder:scaffold:builder
-
-	*/
+	// Setup APIBinding controller for watching resources across workspaces
+	idxRssReconciler, err := controller.NewIndexableResource(log, *cfg, mgr, osClient, apiExportEndpointSliceName)
+	if err != nil {
+		setupLog.Error(err, "unable to create APIBinding reconciler")
+		os.Exit(1)
+	}
+	if err := idxRssReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
+		os.Exit(1)
+	}
+	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
