@@ -13,7 +13,7 @@ type Config struct {
 	} `mapstructure:",squash"`
 
 	SearchableResource struct {
-		Resources []schema.GroupVersionKind `mapstructure:"resources" envconfig:"default=core/v1/Pod,apps/v1/Deployment"`
+		Resources []schema.GroupVersionKind `mapstructure:"resources" envconfig:"default={core.platform-mesh.io;v1alpha1;Account}"`
 	} `mapstructure:",squash"`
 
 	OpenSearch struct {
