@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	kcpcore "github.com/kcp-dev/sdk/apis/core"
+	kcpcorev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
@@ -60,13 +62,12 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
-	// ClusterID is not sufficient
-	clusterName, err := s.getClusterFromContext(ctx)
+	clusterID, workspacePath, err := s.getWorkspacePath(ctx)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
 	}
 
-	orgName, err := s.extractOrgFromKCPPath(clusterName)
+	orgName, err := s.extractOrgFromKCPPath(workspacePath)
 	if err != nil {
 		log.Debug().Msg("Not in an org workspace, skipping")
 		return ctrl.Result{}, nil
@@ -95,7 +96,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	docID := s.generateDocumentID(resource, clusterName)
+	docID := s.generateDocumentID(resource, clusterID)
 	gvk := resource.GroupVersionKind()
 
 	doc := opensearch.NewResourceDocument(
@@ -103,8 +104,8 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		resource.GetKind(),
 		resource.GetName(),
 		resource.GetNamespace(),
-		clusterName,
-		clusterName,
+		clusterID,
+		workspacePath,
 	)
 	doc.APIGroup = gvk.Group
 	doc.APIVersion = gvk.Version
@@ -113,7 +114,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.Labels = resource.GetLabels()
 	doc.Annotations = resource.GetAnnotations()
 
-	if accountName, err := extractAccountFromKCPPath(clusterName); err == nil {
+	if accountName, err := extractAccountFromKCPPath(workspacePath); err == nil {
 		doc.AccountName = accountName
 	}
 
@@ -139,12 +140,32 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	return ctrl.Result{}, nil
 }
 
-func (s *IndexableResourceWatcherSubroutine) getClusterFromContext(ctx context.Context) (string, error) {
-	cluster, ok := mccontext.ClusterFrom(ctx)
+func (s *IndexableResourceWatcherSubroutine) getWorkspacePath(ctx context.Context) (clusterID string, workspacePath string, err error) {
+	id, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
-		return "", fmt.Errorf("cluster not found in context")
+		return "", "", fmt.Errorf("cluster not found in context")
 	}
-	return cluster, nil
+
+	cluster, err := s.mgr.GetCluster(ctx, id)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get cluster %q: %w", id, err)
+	}
+	cl, err := client.New(cluster.GetConfig(), client.Options{Scheme: cluster.GetScheme()})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create client for cluster %q: %w", id, err)
+	}
+	lc := &kcpcorev1alpha1.LogicalCluster{}
+	err = cl.Get(ctx, client.ObjectKey{Name: kcpcorev1alpha1.LogicalClusterName}, lc)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get LogicalCluster for %q: %w", id, err)
+	}
+
+	path, ok := lc.Annotations[kcpcore.LogicalClusterPathAnnotationKey]
+	if !ok {
+		return "", "", fmt.Errorf("LogicalCluster %q missing %s annotation", id, kcpcore.LogicalClusterPathAnnotationKey)
+	}
+
+	return id, path, nil
 }
 
 func (s *IndexableResourceWatcherSubroutine) extractOrgFromKCPPath(clusterName string) (string, error) {
@@ -228,12 +249,12 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
-	clusterName, err := s.getClusterFromContext(ctx)
+	clusterID, workspacePath, err := s.getWorkspacePath(ctx)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
 	}
 
-	orgName, err := s.extractOrgFromKCPPath(clusterName)
+	orgName, err := s.extractOrgFromKCPPath(workspacePath)
 	if err != nil {
 		return ctrl.Result{}, nil
 	}
@@ -244,7 +265,7 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 		return ctrl.Result{}, nil
 	}
 
-	docID := s.generateDocumentID(resource, clusterName)
+	docID := s.generateDocumentID(resource, clusterID)
 	indexName := searchIndex.Status.IndexName
 	if indexName == "" {
 		log.Warn().Msg("SearchIndex has no IndexName, cannot delete document")
