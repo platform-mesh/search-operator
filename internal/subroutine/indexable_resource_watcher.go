@@ -190,7 +190,7 @@ func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
 	if namespace == "" {
 		namespace = "_cluster"
 	}
-	return fmt.Sprintf("%s/%s/%s/%s",
+	return fmt.Sprintf("%s-%s-%s-%s",
 		clusterName,
 		namespace,
 		resource.GetKind(),

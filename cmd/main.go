@@ -11,6 +11,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/platform-mesh/golang-commons/logger"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -166,14 +167,18 @@ func main() {
 	}
 
 	// Setup APIBinding controller for watching resources across workspaces
-	idxRssReconciler, err := controller.NewIndexableResource(log, *cfg, mgr, osClient, apiExportEndpointSliceName)
-	if err != nil {
-		setupLog.Error(err, "unable to create APIBinding reconciler")
-		os.Exit(1)
-	}
-	if err := idxRssReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
-		os.Exit(1)
+	for _, GVK := range cfg.SearchableResource.Resources {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(GVK)
+		idxRssReconciler, err := controller.NewIndexableResource(log, *cfg, mgr, osClient, apiExportEndpointSliceName, obj)
+		if err != nil {
+			setupLog.Error(err, "unable to create APIBinding reconciler")
+			os.Exit(1)
+		}
+		if err := idxRssReconciler.SetupWithManager(mgr, maxConcurrentReconciles, obj); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

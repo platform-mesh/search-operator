@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/builder"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/multicluster"
@@ -25,11 +26,12 @@ type IndexableResourceReconciler struct {
 	mclifecycle *multicluster.LifecycleManager
 	allClient   client.Client
 	cfg         config.Config
+	resource    unstructured.Unstructured
 }
 
 // NewIndexableResourceReconciler creates a new IndexableResource reconciler
 // If osClient is nil, only the IndexableResourceWatcher subroutine is used (no indexing)
-func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string) (*IndexableResourceReconciler, error) {
+func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string, resources *unstructured.Unstructured) (*IndexableResourceReconciler, error) {
 	localMgr := mcMgr.GetLocalManager()
 
 	// Create a wildcard client for cross-workspace queries
@@ -54,7 +56,8 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 		allClient: allClient,
 		mclifecycle: builder.NewBuilder("search-operator", "IndexableResourceReconciler", subroutines, log).
 			BuildMultiCluster(mcMgr),
-		cfg: cfg,
+		cfg:      cfg,
+		resource: *resources,
 	}, nil
 }
 
@@ -64,17 +67,12 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 // Reconcile handles IndexableResource reconciliation
 func (r *IndexableResourceReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	ctxWithCluster := mccontext.WithCluster(ctx, req.ClusterName)
-	return r.mclifecycle.Reconcile(ctxWithCluster, req, newIndexableResource(r.cfg))
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(r.resource.GroupVersionKind())
+	return r.mclifecycle.Reconcile(ctxWithCluster, req, obj)
 }
 
 // SetupWithManager sets up the controller with the multicluster Manager.
-func (r *IndexableResourceReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, evp ...predicate.Predicate) error {
-	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "indexableResourceReconciler", newIndexableResource(r.cfg), "", r, r.log, evp...)
-}
-
-func newIndexableResource(cfg config.Config) *unstructured.Unstructured {
-	obj := &unstructured.Unstructured{}
-	// TODO: loop over it after testing with first GVK works.
-	obj.SetGroupVersionKind(cfg.SearchableResource.Resources[0])
-	return obj
+func (r *IndexableResourceReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, obj *unstructured.Unstructured, evp ...predicate.Predicate) error {
+	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, fmt.Sprintf("indexableResourceReconciler-%s", obj.GetObjectKind().GroupVersionKind().String()), obj, "", r, r.log, evp...)
 }
