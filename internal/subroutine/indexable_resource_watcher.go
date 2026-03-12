@@ -13,7 +13,6 @@ import (
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
-	"github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -181,23 +180,6 @@ func (s *IndexableResourceWatcherSubroutine) getSearchIndexForOrg(ctx context.Co
 	}
 
 	return workspace.Spec.Cluster, nil
-}
-
-func (s *IndexableResourceWatcherSubroutine) isResourceTracked(
-	resource *unstructured.Unstructured,
-	searchIndex *v1alpha1.SearchIndex,
-) bool {
-	gvk := resource.GroupVersionKind()
-
-	for _, tracked := range searchIndex.Spec.TrackedResources {
-		if tracked.Group == gvk.Group &&
-			tracked.Version == gvk.Version &&
-			tracked.Kind == gvk.Kind {
-			return true
-		}
-	}
-
-	return false
 }
 
 func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
