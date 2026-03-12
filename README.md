@@ -216,7 +216,7 @@ export KUBCONFIG=<path to an KCP admin kubeconfig>
 kubectl apply -f ./scripts/searchindex-test-resource.yaml --server="https://localhost:8443/clusters/root:orgs"
 ```
 
-observe logs of successful reconciliation:
+observe logs of successful reconciliation (start with KCP kubeconfig configured with path :root:platform-mesh-system):
 
 ```sh
 # In shell:
