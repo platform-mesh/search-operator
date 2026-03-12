@@ -73,24 +73,13 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{}, nil
 	}
 
-	searchIndex, err := s.getSearchIndexForOrg(ctx, orgName)
+	orgID, err := s.getSearchIndexForOrg(ctx, orgName)
 	if err != nil {
-		// SearchIndex might not exist yet. TODO: requeue or exp. backoff or ignore?
 		log.Debug().Err(err).Msg("SearchIndex not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// Get by path naming convention of current resource if exists, logical cluster otherwise (API export needs permission claim for logical cluster)
-
-	// Maybe not the best idea to first calculate index and only then decide whether to reconcile. We should handle this statically if possible.
-	if !s.isResourceTracked(resource, searchIndex) {
-		log.Debug().
-			Str("kind", resource.GetKind()).
-			Msg("resource type not tracked, skipping")
-		return ctrl.Result{}, nil
-	}
-
-	indexName := searchIndex.Status.IndexName
+	indexName := fmt.Sprintf("pm-orgs-%s", orgID)
 	if indexName == "" {
 		log.Debug().Msg("SearchIndex has no IndexName yet, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -110,7 +99,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.APIGroup = gvk.Group
 	doc.APIVersion = gvk.Version
 	doc.OrganizationName = orgName
-	doc.OrganizationID = searchIndex.Spec.OrganizationClusterID
+	doc.OrganizationID = orgID
 	doc.Labels = resource.GetLabels()
 	doc.Annotations = resource.GetAnnotations()
 
@@ -185,31 +174,13 @@ func extractAccountFromKCPPath(clusterName string) (string, error) {
 	return parts[3], nil
 }
 
-func (s *IndexableResourceWatcherSubroutine) getSearchIndexForOrg(ctx context.Context, orgName string) (*v1alpha1.SearchIndex, error) {
-	log := logger.LoadLoggerFromContext(ctx)
-
-	// Look up the Workspace resource in root:orgs to get the immutable cluster ID
+func (s *IndexableResourceWatcherSubroutine) getSearchIndexForOrg(ctx context.Context, orgName string) (string, error) {
 	workspace := &kcptenancyv1alpha1.Workspace{}
 	if err := s.orgsClient.Get(ctx, types.NamespacedName{Name: orgName}, workspace); err != nil {
-		return nil, fmt.Errorf("failed to get Workspace %q: %w", orgName, err)
+		return "", fmt.Errorf("failed to get Workspace %q: %w", orgName, err)
 	}
 
-	// Look up the SearchIndex by org name using the wildcard client
-	searchIndex := &v1alpha1.SearchIndex{}
-	if err := s.allClient.Get(ctx, types.NamespacedName{Name: orgName}, searchIndex); err != nil {
-		return nil, fmt.Errorf("failed to get SearchIndex %q: %w", orgName, err)
-	}
-
-	// Validate cluster ID consistency
-	if searchIndex.Spec.OrganizationClusterID != workspace.Spec.Cluster {
-		log.Warn().
-			Str("org", orgName).
-			Str("searchIndexClusterID", searchIndex.Spec.OrganizationClusterID).
-			Str("workspaceCluster", workspace.Spec.Cluster).
-			Msg("SearchIndex OrganizationClusterID does not match Workspace.Spec.Cluster")
-	}
-
-	return searchIndex, nil
+	return workspace.Spec.Cluster, nil
 }
 
 func (s *IndexableResourceWatcherSubroutine) isResourceTracked(
@@ -259,14 +230,14 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 		return ctrl.Result{}, nil
 	}
 
-	searchIndex, err := s.getSearchIndexForOrg(ctx, orgName)
+	_, err = s.getSearchIndexForOrg(ctx, orgName)
 	if err != nil {
 		log.Debug().Msg("SearchIndex not found during finalization")
 		return ctrl.Result{}, nil
 	}
 
 	docID := s.generateDocumentID(resource, clusterID)
-	indexName := searchIndex.Status.IndexName
+	indexName := "placeholder"
 	if indexName == "" {
 		log.Warn().Msg("SearchIndex has no IndexName, cannot delete document")
 		return ctrl.Result{}, nil
