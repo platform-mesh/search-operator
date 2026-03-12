@@ -3,9 +3,9 @@ kind: SearchIndex
 metadata:
   name: testindex5
 spec:
-  indexPrefix: "platform-mesh-orgs"
+  indexPrefix: "orgs"
   trackedResources: []
   numberOfShards: 1
   numberOfReplicas: 0
-  organizationClusterID: "flo-test"
+  organizationClusterID: "xxztm0mcc667heq3"
   

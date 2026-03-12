@@ -75,11 +75,6 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 
 	paused := searchIndex.Spec.Paused
 
-	trackedResources := searchIndex.Spec.TrackedResources
-	if len(trackedResources) == 0 {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("this organization specifies no resources to add to index"), false, false)
-	}
-
 	numberShards := searchIndex.Spec.NumberOfShards
 	if numberShards <= 0 {
 		numberShards = 1
@@ -96,7 +91,6 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		Str("organizationClusterID", organizationClusterID).
 		Str("desiredIndexName", desiredIndexName).
 		Bool("paused", paused).
-		Int("trackedResources", len(trackedResources)).
 		Int32("numberOfShards", numberShards).
 		Int32("numberOfReplicas", numReplicas).
 		Msg("processing SearchIndex")
