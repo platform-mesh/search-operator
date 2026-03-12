@@ -227,22 +227,27 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 
 	orgName, err := s.extractOrgFromKCPPath(workspacePath)
 	if err != nil {
+		log.Debug().Msg("Not in an org workspace, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	_, err = s.getSearchIndexForOrg(ctx, orgName)
+	orgID, err := s.getSearchIndexForOrg(ctx, orgName)
 	if err != nil {
-		log.Debug().Msg("SearchIndex not found during finalization")
-		return ctrl.Result{}, nil
+		log.Debug().Err(err).Msg("SearchIndex not found, will retry")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	docID := s.generateDocumentID(resource, clusterID)
-	indexName := "placeholder"
+	indexName := fmt.Sprintf("pm-orgs-%s", orgID)
+	if indexName == "" {
+		log.Debug().Msg("SearchIndex has no IndexName yet, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 	if indexName == "" {
 		log.Warn().Msg("SearchIndex has no IndexName, cannot delete document")
 		return ctrl.Result{}, nil
 	}
 
+	docID := s.generateDocumentID(resource, clusterID)
 	if err := s.osClient.DeleteDocument(ctx, indexName, docID); err != nil {
 		log.Error().Err(err).Msg("failed to delete document from OpenSearch")
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
