@@ -13,6 +13,7 @@ import (
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
+	"github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -72,14 +73,14 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{}, nil
 	}
 
-	orgID, err := s.getSearchIndexForOrg(ctx, orgName)
+	orgID, err := s.getOrgID(ctx, orgName)
 	if err != nil {
 		log.Debug().Err(err).Msg("SearchIndex not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName := fmt.Sprintf("pm-orgs-%s", orgID)
-	if indexName == "" {
+	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
+	if err != nil {
 		log.Debug().Msg("SearchIndex has no IndexName yet, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -128,6 +129,15 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	return ctrl.Result{}, nil
 }
 
+func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID string) (string, error) {
+	searchIndex := v1alpha1.SearchIndex{}
+	err := orgsClient.Get(ctx, types.NamespacedName{Name: orgID}, &searchIndex)
+	if err != nil {
+		return "", fmt.Errorf("failed to get cluster %q: %w", orgID, err)
+	}
+	return searchIndex.Status.IndexName, nil
+}
+
 func (s *IndexableResourceWatcherSubroutine) getWorkspacePath(ctx context.Context) (clusterID string, workspacePath string, err error) {
 	id, ok := mccontext.ClusterFrom(ctx)
 	if !ok {
@@ -173,7 +183,7 @@ func extractAccountFromKCPPath(clusterName string) (string, error) {
 	return parts[3], nil
 }
 
-func (s *IndexableResourceWatcherSubroutine) getSearchIndexForOrg(ctx context.Context, orgName string) (string, error) {
+func (s *IndexableResourceWatcherSubroutine) getOrgID(ctx context.Context, orgName string) (string, error) {
 	workspace := &kcptenancyv1alpha1.Workspace{}
 	if err := s.orgsClient.Get(ctx, types.NamespacedName{Name: orgName}, workspace); err != nil {
 		return "", fmt.Errorf("failed to get Workspace %q: %w", orgName, err)
@@ -213,7 +223,7 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 		return ctrl.Result{}, nil
 	}
 
-	orgID, err := s.getSearchIndexForOrg(ctx, orgName)
+	orgID, err := s.getOrgID(ctx, orgName)
 	if err != nil {
 		log.Debug().Err(err).Msg("SearchIndex not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
