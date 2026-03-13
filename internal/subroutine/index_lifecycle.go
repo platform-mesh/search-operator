@@ -11,8 +11,8 @@ import (
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -23,6 +23,7 @@ import (
 
 // IndexLifecycleSubroutine manages the lifecycle of OpenSearch indices
 type IndexLifecycleSubroutine struct {
+	mgr               mcmanager.Manager
 	osClient          *opensearch.Client
 	staticIndexPrefix string
 }
@@ -30,6 +31,7 @@ type IndexLifecycleSubroutine struct {
 // NewIndexLifecycleSubroutine creates a new index lifecycle subroutine
 func NewIndexLifecycleSubroutine(mgr mcmanager.Manager, osClient *opensearch.Client, staticIndexPrefix string) *IndexLifecycleSubroutine {
 	return &IndexLifecycleSubroutine{
+		mgr:               mgr,
 		osClient:          osClient,
 		staticIndexPrefix: normalizePrefix(staticIndexPrefix),
 	}
@@ -39,6 +41,9 @@ var _ lifecyclesubroutine.Subroutine = &IndexLifecycleSubroutine{}
 
 const (
 	searchIndexFinalizer = "search.platform-mesh.io/index"
+	// Used by clients (e.g. search service) for label selectors.
+	searchIndexOrgClusterIDLabel      = "search.platform-mesh.io/org-cluster-id"
+	searchIndexOrgClusterIDAnnotation = "search.platform-mesh.io/org-cluster-id"
 )
 
 // GetName returns the subroutine name
@@ -67,6 +72,9 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 	organizationClusterID := searchIndex.Spec.OrganizationClusterID
 	if organizationClusterID == "" {
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing required spec.organizationClusterID"), false, false)
+	}
+	if err := s.ensureSearchIndexMetadata(ctx, searchIndex, organizationClusterID); err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("ensure SearchIndex metadata: %w", err), true, true)
 	}
 	specPrefix := searchIndex.Spec.IndexPrefix
 	if specPrefix == "" {
@@ -200,13 +208,11 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 // Finalize handles cleanup when the resource is being deleted
 func (s *IndexLifecycleSubroutine) Finalize(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
-	searchIndex, ok := instance.(*unstructured.Unstructured)
+	searchIndex, ok := instance.(*v1alpha1.SearchIndex)
 	if !ok {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("expected *unstructured.Unstructured, got %T", instance), false, false)
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("expected *v1alpha1.SearchIndex, got %T", instance), false, false)
 	}
-	if !isSearchIndexResource(searchIndex) {
-		return ctrl.Result{}, nil
-	}
+
 	if s.osClient == nil {
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("OpenSearch client not configured during SearchIndex finalization"), true, false)
 	}
@@ -216,32 +222,13 @@ func (s *IndexLifecycleSubroutine) Finalize(ctx context.Context, instance runtim
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing cluster in multicluster context during finalization"), true, false)
 	}
 
-	indexName, _, err := unstructured.NestedString(searchIndex.Object, "status", "indexName")
-	if err != nil {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read status.indexName: %w", err), false, false)
-	}
+	indexName := searchIndex.Status.IndexName
 	if indexName == "" {
-		organizationClusterID, _, specErr := unstructured.NestedString(searchIndex.Object, "spec", "organizationClusterID")
-		if specErr != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.organizationClusterID during finalization: %w", specErr), false, false)
-		}
-		if organizationClusterID == "" {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("missing spec.organizationClusterID during finalization"), false, false)
-		}
-		indexPrefix, _, prefixErr := unstructured.NestedString(searchIndex.Object, "spec", "indexPrefix")
-		if prefixErr != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read spec.indexPrefix during finalization: %w", prefixErr), false, false)
-		}
-		desiredIndexName := buildCanonicalIndexName(s.staticIndexPrefix, indexPrefix, organizationClusterID)
-		desiredExists, existsErr := s.osClient.IndexExists(ctx, desiredIndexName)
-		if existsErr != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to check desired index existence during finalization for %q: %w", desiredIndexName, existsErr), true, true)
-		}
-		if desiredExists {
-			indexName = desiredIndexName
-		} else {
-			indexName = organizationClusterID
-		}
+		log.Warn().
+			Str("name", searchIndex.GetName()).
+			Str("workspace", workspaceName).
+			Msg("SearchIndex has no indexName in status; skipping OpenSearch cleanup")
+		return ctrl.Result{}, nil
 	}
 
 	log.Info().
@@ -257,13 +244,40 @@ func (s *IndexLifecycleSubroutine) Finalize(ctx context.Context, instance runtim
 	return ctrl.Result{}, nil
 }
 
-func isSearchIndexResource(instance runtimeobject.RuntimeObject) bool {
-	uns, ok := instance.(*unstructured.Unstructured)
-	if !ok {
-		return false
+func (s *IndexLifecycleSubroutine) ensureSearchIndexMetadata(ctx context.Context, si *v1alpha1.SearchIndex, orgClusterID string) error {
+	original := si.DeepCopy()
+	changed := false
+
+	if si.Labels == nil {
+		si.Labels = map[string]string{}
 	}
-	return uns.GetKind() == "SearchIndex" &&
-		uns.GetAPIVersion() == "core.platform-mesh.io/v1alpha1"
+	if current := strings.TrimSpace(si.Labels[searchIndexOrgClusterIDLabel]); current != orgClusterID {
+		si.Labels[searchIndexOrgClusterIDLabel] = orgClusterID
+		changed = true
+	}
+
+	if si.Annotations == nil {
+		si.Annotations = map[string]string{}
+	}
+	if current := strings.TrimSpace(si.Annotations[searchIndexOrgClusterIDAnnotation]); current != orgClusterID {
+		si.Annotations[searchIndexOrgClusterIDAnnotation] = orgClusterID
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+
+	cluster, err := s.mgr.ClusterFromContext(ctx)
+	if err != nil {
+		return fmt.Errorf("get cluster from context: %w", err)
+	}
+
+	if err := cluster.GetClient().Patch(ctx, si, client.MergeFrom(original)); err != nil {
+		return fmt.Errorf("patch SearchIndex metadata: %w", err)
+	}
+
+	return nil
 }
 
 func buildCanonicalIndexName(staticPrefix, specPrefix, organizationClusterID string) string {
