@@ -4,8 +4,52 @@ import (
 	"time"
 )
 
+// DefaultIndexMapping returns the default OpenSearch index mapping for workspace and resource documents.
+// - payload_raw is stored but not indexed (enabled=false).
+// - payload_text stores the full serialized object for full-text search.
+func DefaultIndexMapping() string {
+	return `{
+	  "dynamic": false,
+	  "properties": {
+	    "id": {"type": "keyword"},
+	    "name": {
+	      "type": "text",
+	      "fields": {
+	        "keyword": {"type": "keyword", "ignore_above": 256}
+	      }
+	    },
+	    "type": {"type": "keyword"},
+	    "kind": {"type": "keyword"},
+	    "namespace": {"type": "keyword"},
+	    "api_group": {"type": "keyword"},
+	    "api_version": {"type": "keyword"},
+	    "cluster_name": {"type": "keyword"},
+	    "path": {"type": "keyword"},
+	    "workspace_path": {"type": "keyword"},
+	    "organization_id": {"type": "keyword"},
+	    "organization_name": {"type": "keyword"},
+	    "account_id": {"type": "keyword"},
+	    "account_name": {"type": "keyword"},
+	    "fga_object": {"type": "keyword"},
+	    "labels": {"type": "flat_object"},
+	    "annotations": {"type": "flat_object"},
+	    "permissions": {
+	      "type": "nested",
+	      "properties": {
+	        "user": {"type": "keyword"},
+	        "relation": {"type": "keyword"},
+	        "object": {"type": "keyword"}
+	      }
+	    },
+	    "created_at": {"type": "date"},
+	    "updated_at": {"type": "date"},
+	    "payload_raw_json": {"type": "keyword", "index": false, "doc_values": false},
+	    "payload_text": {"type": "text"}
+	  }
+	}`
+}
+
 // WorkspaceDocument represents an indexed workspace/account in OpenSearch
-// This document structure includes OpenFGA tuple information for permission checks
 type WorkspaceDocument struct {
 	// Core workspace/account fields
 	ID   string `json:"id"`   // Document ID (typically the cluster name)
@@ -24,8 +68,10 @@ type WorkspaceDocument struct {
 	AccountID   string `json:"account_id,omitempty"`
 	AccountName string `json:"account_name,omitempty"`
 
-	// OpenFGA Permission Tuples
-	// These are embedded in each document for permission-aware search
+	// FGAObject is the unique FGA object name for this document (e.g. "core_platform-mesh_io_account:ID/name")
+	FGAObject string `json:"fga_object,omitempty"`
+
+	// OpenFGA Permission Tuples for this resource
 	Permissions []PermissionTuple `json:"permissions,omitempty"`
 
 	// Timestamps
@@ -52,9 +98,9 @@ type PermissionTuple struct {
 type ResourceDocument struct {
 	// Core resource identification
 	ID        string `json:"id"`        // Unique document ID
-	Kind      string `json:"kind"`      // Resource kind (e.g., "Deployment", "Service")
+	Kind      string `json:"kind"`      // Resource kind
 	Name      string `json:"name"`      // Resource name
-	Namespace string `json:"namespace"` // Resource namespace (empty for cluster-scoped)
+	Namespace string `json:"namespace"` // Resource namespace
 
 	// API version info
 	APIGroup   string `json:"api_group"`
@@ -68,6 +114,9 @@ type ResourceDocument struct {
 	AccountID        string `json:"account_id,omitempty"`
 	AccountName      string `json:"account_name,omitempty"`
 
+	// FGAObject is the unique FGA object name for this document
+	FGAObject string `json:"fga_object,omitempty"`
+
 	// OpenFGA Permission Tuples for this resource
 	Permissions []PermissionTuple `json:"permissions,omitempty"`
 
@@ -79,10 +128,11 @@ type ResourceDocument struct {
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 
-	// Optional: Raw spec/status for full-text search
-	// We use interface{} to support any resource type
-	Spec   interface{} `json:"spec,omitempty"`
-	Status interface{} `json:"status,omitempty"`
+	// Full raw object payload serialized as JSON, stored but not indexed.
+	PayloadRawJSON string `json:"payload_raw_json,omitempty"`
+
+	// Full serialized object payload for full-text search.
+	PayloadText string `json:"payload_text,omitempty"`
 }
 
 // NewWorkspaceDocument creates a new workspace document with default values
