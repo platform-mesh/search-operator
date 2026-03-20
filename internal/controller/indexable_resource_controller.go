@@ -47,9 +47,11 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 	}
 
 	// Build subroutines list
-	subroutines := []lifecyclesubroutine.Subroutine{
-		subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName),
+	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName, localMgr.GetConfig())
+	if err != nil {
+		return nil, fmt.Errorf("create IndexableResourceWatcherSubroutine: %w", err)
 	}
+	subroutines := []lifecyclesubroutine.Subroutine{watcherSubroutine}
 
 	return &IndexableResourceReconciler{
 		log:       log,
