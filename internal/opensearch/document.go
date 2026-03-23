@@ -124,6 +124,10 @@ type ResourceDocument struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Annotations map[string]string `json:"annotations,omitempty"`
 
+	// Resource spec and status (arbitrary nested maps from the unstructured object)
+	Spec   map[string]interface{} `json:"spec,omitempty"`
+	Status map[string]interface{} `json:"status,omitempty"`
+
 	// Timestamps
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
