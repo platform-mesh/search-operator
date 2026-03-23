@@ -8,7 +8,6 @@ import (
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/logger"
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -51,10 +50,4 @@ func (r *SearchIndexReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 // SetupWithManager sets up the controller with the multicluster Manager.
 func (r *SearchIndexReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, evp ...predicate.Predicate) error {
 	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "searchindex", &v1alpha1.SearchIndex{}, "", r, r.log, evp...)
-}
-
-var searchIndexGVK = schema.GroupVersionKind{
-	Group:   "core.platform-mesh.io",
-	Version: "v1alpha1",
-	Kind:    "SearchIndex",
 }
