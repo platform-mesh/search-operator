@@ -1,0 +1,11 @@
+apiVersion: core.platform-mesh.io/v1alpha1
+kind: SearchIndex
+metadata:
+  name: xxztm0mcc667heq3
+spec:
+  indexPrefix: "orgs"
+  trackedResources: []
+  numberOfShards: 1
+  numberOfReplicas: 0
+  organizationClusterID: "xxztm0mcc667heq3"
+  
