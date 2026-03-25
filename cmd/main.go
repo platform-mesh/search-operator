@@ -134,7 +134,7 @@ func main() {
 		LeaderElectionID:       "search-operator.platform-mesh.io",
 	}
 
-	// Create the smulticluster manager
+	// Create the multicluster manager
 	mgr, err := mcmanager.New(kcpCfg, provider, mgrOpts)
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")

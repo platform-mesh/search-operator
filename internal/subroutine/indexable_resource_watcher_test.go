@@ -11,19 +11,19 @@ import (
 
 func TestBuildPayloadSeparatesRawJSONFromText(t *testing.T) {
 	resource := &unstructured.Unstructured{
-		Object: map[string]interface{}{
+		Object: map[string]any{
 			"apiVersion": "core.platform-mesh.io/v1alpha1",
 			"kind":       "Component",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"name":          "my-component",
 				"namespace":     "default",
 				"uid":           "abc-123-def",
-				"managedFields": []interface{}{map[string]interface{}{"manager": "kubectl"}},
-				"labels": map[string]interface{}{
+				"managedFields": []any{map[string]any{"manager": "kubectl"}},
+				"labels": map[string]any{
 					"app": "frontend",
 				},
 			},
-			"spec": map[string]interface{}{
+			"spec": map[string]any{
 				"replicas": float64(3),
 				"image":    "nginx:latest",
 				"enabled":  true,
@@ -37,7 +37,7 @@ func TestBuildPayloadSeparatesRawJSONFromText(t *testing.T) {
 	}
 
 	// rawJSON must be valid JSON
-	var parsed map[string]interface{}
+	var parsed map[string]any
 	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil {
 		t.Fatalf("rawJSON is not valid JSON: %v", err)
 	}
@@ -221,8 +221,8 @@ func TestResolveResourceClusterID(t *testing.T) {
 
 func TestResolveSpecClusterID(t *testing.T) {
 	resource := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"spec": map[string]interface{}{
+		Object: map[string]any{
+			"spec": map[string]any{
 				"cluster": " spec-cluster ",
 			},
 		},
@@ -233,7 +233,7 @@ func TestResolveSpecClusterID(t *testing.T) {
 	}
 
 	resourceNoSpec := &unstructured.Unstructured{
-		Object: map[string]interface{}{},
+		Object: map[string]any{},
 	}
 	if got := resolveSpecClusterID(resourceNoSpec); got != "" {
 		t.Fatalf("resolveSpecClusterID() without spec = %q, want empty", got)
@@ -242,15 +242,15 @@ func TestResolveSpecClusterID(t *testing.T) {
 
 func TestResolveAccountInfoLookupClusters(t *testing.T) {
 	resource := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"spec": map[string]interface{}{
+		Object: map[string]any{
+			"spec": map[string]any{
 				"cluster": "spec-cluster",
 			},
 		},
 	}
 
-	got := resolveAccountInfoLookupClusters(resource, "ctx-cluster", "resource-cluster", "workspace-cluster")
-	want := []string{"resource-cluster", "ctx-cluster", "spec-cluster", "workspace-cluster"}
+	got := resolveAccountInfoLookupClusters(resource, "ctx-cluster", "resource-cluster")
+	want := []string{"resource-cluster", "ctx-cluster", "spec-cluster"}
 	if len(got) != len(want) {
 		t.Fatalf("resolveAccountInfoLookupClusters() len = %d, want %d (%v)", len(got), len(want), got)
 	}
@@ -261,14 +261,14 @@ func TestResolveAccountInfoLookupClusters(t *testing.T) {
 	}
 
 	resourceDup := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"spec": map[string]interface{}{
+		Object: map[string]any{
+			"spec": map[string]any{
 				"cluster": "ctx-cluster",
 			},
 		},
 	}
 
-	gotDup := resolveAccountInfoLookupClusters(resourceDup, "ctx-cluster", "ctx-cluster", "ctx-cluster")
+	gotDup := resolveAccountInfoLookupClusters(resourceDup, "ctx-cluster", "ctx-cluster")
 	if len(gotDup) != 1 || gotDup[0] != "ctx-cluster" {
 		t.Fatalf("resolveAccountInfoLookupClusters() dedupe = %v, want [ctx-cluster]", gotDup)
 	}

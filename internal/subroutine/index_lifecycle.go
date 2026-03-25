@@ -88,10 +88,7 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		numberShards = 1
 	}
 
-	numReplicas := searchIndex.Spec.NumberOfReplicas
-	if numReplicas < 0 {
-		numReplicas = 0
-	}
+	numReplicas := max(searchIndex.Spec.NumberOfReplicas, 0)
 	desiredIndexName := buildCanonicalIndexName(s.staticIndexPrefix, specPrefix, organizationClusterID)
 
 	log.Info().

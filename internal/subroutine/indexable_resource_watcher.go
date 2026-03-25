@@ -66,10 +66,11 @@ func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient clie
 
 var _ lifecyclesubroutine.Subroutine = &IndexableResourceWatcherSubroutine{}
 
-const indexableResourceFinalizer = "search.platform-mesh.io/indexable-resource"
-const kcpClusterAnnotation = "kcp.io/cluster"
+const (
+	indexableResourceFinalizer = "search.platform-mesh.io/indexable-resource"
+	kcpClusterAnnotation       = "kcp.io/cluster"
+)
 
-// GetName returns the subroutine name
 func (s *IndexableResourceWatcherSubroutine) GetName() string {
 	return "IndexableResourceWatcher"
 }
@@ -79,7 +80,6 @@ func (s *IndexableResourceWatcherSubroutine) Finalizers(_ runtimeobject.RuntimeO
 	return []string{indexableResourceFinalizer}
 }
 
-// Process handles the reconciliation logic
 func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
@@ -132,26 +132,24 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 
 	accountInfo := accountv1alpha1.AccountInfo{}
 	foundAccountInfo := false
-	workspaceClusterID := ""
 
 	if gvk.Group == "core.platform-mesh.io" && (gvk.Kind == "Account" || gvk.Kind == "Organization") {
+		// account and organization are both FGA account objects with the AccountInfo
+		// in their own child workspace, use a direct lookup based on the current workspace path
 		accountWorkspacePath := workspacePath + ":" + resource.GetName()
-		if ai, pathErr := s.getAccountInfoFromWorkspacePath(ctx, accountWorkspacePath); pathErr == nil {
-			accountInfo = *ai
-			foundAccountInfo = true
-		} else {
-			log.Debug().Err(pathErr).
+		ai, pathErr := s.getAccountInfoFromWorkspacePath(ctx, accountWorkspacePath)
+		if pathErr != nil {
+			log.Warn().Err(pathErr).
 				Str("accountWorkspacePath", accountWorkspacePath).
-				Msg("path-based AccountInfo lookup failed, falling back to cluster-based lookup")
-			// Fallback: resolve workspace cluster ID for the cluster-based loop below.
-			if resolvedWorkspaceClusterID, wcsErr := s.resolveWorkspaceClusterID(ctx, resourceClusterID, resource.GetName()); wcsErr == nil {
-				workspaceClusterID = resolvedWorkspaceClusterID
-			}
+				Msg("AccountInfo path-based lookup failed, requeuing")
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
+		accountInfo = *ai
+		foundAccountInfo = true
 	}
 
 	if !foundAccountInfo {
-		accountInfoLookupClusters := resolveAccountInfoLookupClusters(resource, clusterID, resourceClusterID, workspaceClusterID)
+		accountInfoLookupClusters := resolveAccountInfoLookupClusters(resource, clusterID, resourceClusterID)
 		for _, candidateClusterID := range accountInfoLookupClusters {
 			cluster, getClusterErr := s.mgr.GetCluster(ctx, candidateClusterID)
 			if getClusterErr != nil {
@@ -339,7 +337,7 @@ func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
 
 func buildPayload(resource *unstructured.Unstructured) (string, string, error) {
 	raw := resource.DeepCopy().Object
-	if metadata, ok := raw["metadata"].(map[string]interface{}); ok {
+	if metadata, ok := raw["metadata"].(map[string]any); ok {
 		delete(metadata, "managedFields")
 	}
 
@@ -384,8 +382,8 @@ func mapResourceToFGAObject(group, kind, clusterID string, accountInfo *accountv
 	return fgaGroup, fgaKind, fgaClusterID
 }
 
-func resolveAccountInfoLookupClusters(resource *unstructured.Unstructured, contextClusterID, resourceClusterID, workspaceClusterID string) []string {
-	candidates := []string{resourceClusterID, contextClusterID, resolveSpecClusterID(resource), workspaceClusterID}
+func resolveAccountInfoLookupClusters(resource *unstructured.Unstructured, contextClusterID, resourceClusterID string) []string {
+	candidates := []string{resourceClusterID, contextClusterID, resolveSpecClusterID(resource)}
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(candidates))
 	for _, c := range candidates {
@@ -406,7 +404,7 @@ func resolveSpecClusterID(resource *unstructured.Unstructured) string {
 	if resource == nil {
 		return ""
 	}
-	spec, ok := resource.Object["spec"].(map[string]interface{})
+	spec, ok := resource.Object["spec"].(map[string]any)
 	if !ok {
 		return ""
 	}
@@ -444,28 +442,6 @@ func (s *IndexableResourceWatcherSubroutine) getAccountInfoFromWorkspacePath(ctx
 	}
 
 	return accountInfo, nil
-}
-
-func (s *IndexableResourceWatcherSubroutine) resolveWorkspaceClusterID(ctx context.Context, parentClusterID, workspaceName string) (string, error) {
-	cluster, err := s.mgr.GetCluster(ctx, parentClusterID)
-	if err != nil {
-		return "", fmt.Errorf("get parent cluster %q: %w", parentClusterID, err)
-	}
-
-	clusterClient := cluster.GetClient()
-	workspace := &kcptenancyv1alpha1.Workspace{}
-	key := client.ObjectKey{Name: workspaceName}
-	lookupCtx := mccontext.WithCluster(ctx, parentClusterID)
-	getErr := clusterClient.Get(lookupCtx, key, workspace)
-	if getErr != nil {
-		// Some cluster clients can already be scoped and ignore cluster context.
-		getErr = clusterClient.Get(ctx, key, workspace)
-		if getErr != nil {
-			return "", getErr
-		}
-	}
-
-	return strings.TrimSpace(workspace.Spec.Cluster), nil
 }
 
 func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
