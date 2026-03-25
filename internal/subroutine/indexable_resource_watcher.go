@@ -3,6 +3,7 @@ package subroutine
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
@@ -30,17 +33,29 @@ type IndexableResourceWatcherSubroutine struct {
 	orgsClient    client.Client // scoped to root:orgs for Workspace lookups
 	osClient      *opensearch.Client
 	apiExportName string
+	rootCfg       *rest.Config
+	gvk           *schema.GroupVersionKind
 }
 
 // NewIndexableResourceWatcherSubroutine creates a new IndexableResource watcher subroutine
-func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string) *IndexableResourceWatcherSubroutine {
+func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, localCfg *rest.Config, gvk *schema.GroupVersionKind) (*IndexableResourceWatcherSubroutine, error) {
+	rootCfg := rest.CopyConfig(localCfg)
+	parsed, err := url.Parse(rootCfg.Host)
+	if err != nil {
+		return nil, fmt.Errorf("parse KCP host URL: %w", err)
+	}
+	parsed.Path = ""
+	rootCfg.Host = parsed.String()
+
 	return &IndexableResourceWatcherSubroutine{
 		mgr:           mgr,
 		allClient:     allClient,
 		orgsClient:    orgsClient,
 		osClient:      osClient,
 		apiExportName: apiExportName,
-	}
+		rootCfg:       rootCfg,
+		gvk:           gvk,
+	}, nil
 }
 
 var _ lifecyclesubroutine.Subroutine = &IndexableResourceWatcherSubroutine{}
@@ -75,15 +90,24 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 
 	orgID, err := s.getOrgID(ctx, orgName)
 	if err != nil {
-		log.Debug().Err(err).Msg("SearchIndex not found, will retry")
+		log.Debug().Err(err).Msg("orgID not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
 	if err != nil {
-		log.Debug().Msg("SearchIndex has no IndexName yet, requeuing")
+		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
+	if indexName == "" {
+		log.Debug().Str("orgID", orgID).Msg("search index not ready yet, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	fgaPrefix := fmt.Sprintf("%s_%s", s.gvk.Group, s.gvk.Kind)
+	fgaPrefix = strings.ReplaceAll(fgaPrefix, ".", "_")
+	fgaPrefix = strings.ToLower(fgaPrefix)
+	fgaObject := fmt.Sprintf("%s:%s/%s", fgaPrefix, clusterID, resource.GetName())
 
 	docID := s.generateDocumentID(resource, clusterID)
 	gvk := resource.GroupVersionKind()
@@ -102,6 +126,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.OrganizationID = orgID
 	doc.Labels = resource.GetLabels()
 	doc.Annotations = resource.GetAnnotations()
+	doc.FGAObject = fgaObject
 
 	if accountName, err := extractAccountFromKCPPath(workspacePath); err == nil {
 		doc.AccountName = accountName

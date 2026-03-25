@@ -170,12 +170,12 @@ func main() {
 	for _, GVK := range cfg.SearchableResource.Resources {
 		obj := &unstructured.Unstructured{}
 		obj.SetGroupVersionKind(GVK)
-		idxRssReconciler, err := controller.NewIndexableResource(log, *cfg, mgr, osClient, apiExportEndpointSliceName, obj)
+		idxRss, err := controller.NewIndexableResource(log, *cfg, mgr, osClient, apiExportEndpointSliceName, obj, &GVK)
 		if err != nil {
 			setupLog.Error(err, "unable to create APIBinding reconciler")
 			os.Exit(1)
 		}
-		if err := idxRssReconciler.SetupWithManager(mgr, maxConcurrentReconciles, obj); err != nil {
+		if err := idxRss.SetupWithManager(mgr, maxConcurrentReconciles, obj); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
 			os.Exit(1)
 		}

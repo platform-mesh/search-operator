@@ -9,6 +9,7 @@ import (
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/logger"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -31,7 +32,7 @@ type IndexableResourceReconciler struct {
 
 // NewIndexableResourceReconciler creates a new IndexableResource reconciler
 // If osClient is nil, only the IndexableResourceWatcher subroutine is used (no indexing)
-func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string, resources *unstructured.Unstructured) (*IndexableResourceReconciler, error) {
+func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string, resources *unstructured.Unstructured, gvk *schema.GroupVersionKind) (*IndexableResourceReconciler, error) {
 	localMgr := mcMgr.GetLocalManager()
 
 	// Create a wildcard client for cross-workspace queries
@@ -47,9 +48,11 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 	}
 
 	// Build subroutines list
-	subroutines := []lifecyclesubroutine.Subroutine{
-		subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName),
+	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName, localMgr.GetConfig(), gvk)
+	if err != nil {
+		return nil, fmt.Errorf("create IndexableResourceWatcherSubroutine: %w", err)
 	}
+	subroutines := []lifecyclesubroutine.Subroutine{watcherSubroutine}
 
 	return &IndexableResourceReconciler{
 		log:       log,
