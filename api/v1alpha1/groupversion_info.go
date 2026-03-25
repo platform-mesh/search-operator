@@ -24,9 +24,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
+const (
+	// GroupName is the group name used in this package.
+	GroupName = "core.platform-mesh.io"
+
+	// AccountKind is the Kind name for Account resources.
+	AccountKind = "Account"
+
+	// OrganizationKind is the Kind name for Organization resources.
+	OrganizationKind = "Organization"
+)
+
 var (
 	// GroupVersion is group version used to register these objects.
-	GroupVersion = schema.GroupVersion{Group: "core.platform-mesh.io", Version: "v1alpha1"}
+	GroupVersion = schema.GroupVersion{Group: GroupName, Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}

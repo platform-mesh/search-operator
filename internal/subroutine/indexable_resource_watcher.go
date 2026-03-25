@@ -133,7 +133,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	accountInfo := accountv1alpha1.AccountInfo{}
 	foundAccountInfo := false
 
-	if gvk.Group == "core.platform-mesh.io" && (gvk.Kind == "Account" || gvk.Kind == "Organization") {
+	if gvk.Group == v1alpha1.GroupName && (gvk.Kind == v1alpha1.AccountKind || gvk.Kind == v1alpha1.OrganizationKind) {
 		// account and organization are both FGA account objects with the AccountInfo
 		// in their own child workspace, use a direct lookup based on the current workspace path
 		accountWorkspacePath := workspacePath + ":" + resource.GetName()
@@ -213,12 +213,12 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.FGAObject = buildFGAObjectName(fgaGroup, fgaKind, fgaClusterID, resource.GetName(), resource.GetNamespace())
 
 	// Contextual Tuples (Permissions field), build parent hierarchy from AccountInfo
-	orgObject := buildFGAObjectName("core.platform-mesh.io", "Account", accountInfo.Spec.Organization.OriginClusterId, accountInfo.Spec.Organization.Name, "")
-	accountObject := buildFGAObjectName("core.platform-mesh.io", "Account", accountInfo.Spec.Account.OriginClusterId, accountInfo.Spec.Account.Name, "")
+	orgObject := buildFGAObjectName(v1alpha1.GroupName, v1alpha1.AccountKind, accountInfo.Spec.Organization.OriginClusterId, accountInfo.Spec.Organization.Name, "")
+	accountObject := buildFGAObjectName(v1alpha1.GroupName, v1alpha1.AccountKind, accountInfo.Spec.Account.OriginClusterId, accountInfo.Spec.Account.Name, "")
 	doc.AccountName = accountInfo.Spec.Account.Name
 	doc.AccountID = accountInfo.Spec.Account.OriginClusterId
 
-	isOrganization := gvk.Group == "core.platform-mesh.io" && gvk.Kind == "Organization"
+	isOrganization := gvk.Group == v1alpha1.GroupName && gvk.Kind == v1alpha1.OrganizationKind
 	parentObject := accountObject
 	if isOrganization {
 		parentObject = orgObject
@@ -359,12 +359,12 @@ func mapResourceToFGAObject(group, kind, clusterID string, accountInfo *accountv
 	fgaKind = kind
 	fgaClusterID = clusterID
 
-	isAccount := group == "core.platform-mesh.io" && kind == "Account"
-	isOrganization := group == "core.platform-mesh.io" && kind == "Organization"
+	isAccount := group == v1alpha1.GroupName && kind == v1alpha1.AccountKind
+	isOrganization := group == v1alpha1.GroupName && kind == v1alpha1.OrganizationKind
 	isWorkspace := group == "tenancy.kcp.io" && kind == "Workspace"
 	if isAccount || isWorkspace || isOrganization {
-		fgaGroup = "core.platform-mesh.io"
-		fgaKind = "Account"
+		fgaGroup = v1alpha1.GroupName
+		fgaKind = v1alpha1.AccountKind
 		if accountInfo != nil {
 			switch {
 			case isOrganization:
