@@ -13,9 +13,11 @@ import (
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
 	kcpcorev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
+	fgamodel "github.com/platform-mesh/golang-commons/fga/model"
 	"github.com/platform-mesh/golang-commons/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -75,7 +77,7 @@ func (s *IndexableResourceWatcherSubroutine) GetName() string {
 	return "IndexableResourceWatcher"
 }
 
-// Finalizers returns the finalizers this subroutine manages
+// Finalizers return the finalizers this subroutine manages
 func (s *IndexableResourceWatcherSubroutine) Finalizers(_ runtimeobject.RuntimeObject) []string {
 	return []string{indexableResourceFinalizer}
 }
@@ -224,14 +226,18 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		parentObject = orgObject
 	}
 
+	namespaceClusterID := resourceClusterID
+	if generatedClusterID := strings.TrimSpace(accountInfo.Spec.Account.GeneratedClusterId); generatedClusterID != "" {
+		namespaceClusterID = generatedClusterID
+	}
+
 	if ns := resource.GetNamespace(); ns != "" {
 		// Namespaced resource: Resource -> Namespace -> Parent
-		nsObject := buildFGAObjectName("", "Namespace", resourceClusterID, ns, "")
-		doc.AddPermission(parentObject, "parent", nsObject)
-		doc.AddPermission(nsObject, "parent", doc.FGAObject)
+		nsObject := buildFGAObjectName("", "Namespace", namespaceClusterID, ns, "")
+		addParentPermissions(doc, fgamodel.BuildParentTuples(parentObject, doc.FGAObject, &nsObject))
 	} else if doc.FGAObject != parentObject {
 		// Cluster-scoped resource: direct link to its logical parent (Account or Org)
-		doc.AddPermission(parentObject, "parent", doc.FGAObject)
+		addParentPermissions(doc, fgamodel.BuildParentTuples(parentObject, doc.FGAObject, nil))
 	}
 
 	payloadRawJSON, payloadText, payloadErr := buildPayload(resource)
@@ -491,16 +497,15 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 }
 
 func buildFGAObjectName(group, kind, clusterID, name, namespace string) string {
-	if group == "" {
-		group = "core"
-	}
-
-	resourceType := strings.ToLower(strings.ReplaceAll(group, ".", "_") + "_" + kind)
+	var namespacePtr *string
 	if namespace != "" {
-		return fmt.Sprintf("%s:%s/%s/%s", resourceType, clusterID, namespace, name)
+		namespacePtr = &namespace
 	}
 
-	return fmt.Sprintf("%s:%s/%s", resourceType, clusterID, name)
+	// TODO rebac-auth-webhook uses singular resource names as the canonical basis for
+	// OpenFGA object types. For our current resources, lowercase Kind matches the
+	// singular form while keeping output stable.
+	return fgamodel.BuildObjectName(group, strings.ToLower(kind), clusterID, name, namespacePtr)
 }
 
 func resolveResourceClusterID(resource *unstructured.Unstructured, fallbackClusterID string) string {
@@ -509,4 +514,14 @@ func resolveResourceClusterID(resource *unstructured.Unstructured, fallbackClust
 	}
 
 	return fallbackClusterID
+}
+
+func addParentPermissions(doc *opensearch.ResourceDocument, tuples []*openfgav1.TupleKey) {
+	for _, tuple := range tuples {
+		if tuple == nil {
+			continue
+		}
+
+		doc.AddPermission(tuple.User, tuple.Relation, tuple.Object)
+	}
 }
