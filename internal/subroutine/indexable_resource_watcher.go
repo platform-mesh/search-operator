@@ -21,6 +21,7 @@ import (
 	"github.com/platform-mesh/golang-commons/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -132,75 +133,18 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.Labels = resource.GetLabels()
 	doc.Annotations = resource.GetAnnotations()
 
-	accountInfo := accountv1alpha1.AccountInfo{}
-	foundAccountInfo := false
-
-	if gvk.Group == v1alpha1.GroupName && (gvk.Kind == v1alpha1.AccountKind || gvk.Kind == v1alpha1.OrganizationKind) {
-		// account and organization are both FGA account objects with the AccountInfo
-		// in their own child workspace, use a direct lookup based on the current workspace path
-		accountWorkspacePath := workspacePath + ":" + resource.GetName()
-		ai, pathErr := s.getAccountInfoFromWorkspacePath(ctx, accountWorkspacePath)
-		if pathErr != nil {
-			log.Warn().Err(pathErr).
-				Str("accountWorkspacePath", accountWorkspacePath).
-				Msg("AccountInfo path-based lookup failed, requeuing")
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-		}
-		accountInfo = *ai
-		foundAccountInfo = true
+	accountInfo, err := s.getAccountInfo(ctx, workspacePath, gvk, resource)
+	if err != nil {
+		log.Warn().Err(err).
+			Str("workspacePath", workspacePath).
+			Msg("AccountInfo path-based lookup failed, requeuing")
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
-	if !foundAccountInfo {
-		accountInfoLookupClusters := resolveAccountInfoLookupClusters(resource, clusterID, resourceClusterID)
-		for _, candidateClusterID := range accountInfoLookupClusters {
-			cluster, getClusterErr := s.mgr.GetCluster(ctx, candidateClusterID)
-			if getClusterErr != nil {
-				log.Warn().
-					Err(getClusterErr).
-					Str("candidateClusterID", candidateClusterID).
-					Msg("failed to get candidate cluster for AccountInfo lookup")
-				continue
-			}
-
-			clusterClient := cluster.GetClient()
-			lookupCtx := mccontext.WithCluster(ctx, candidateClusterID)
-			getAccountInfoErr := clusterClient.Get(lookupCtx, client.ObjectKey{Name: "account"}, &accountInfo)
-			if getAccountInfoErr == nil {
-				foundAccountInfo = true
-				break
-			}
-			if apierrors.IsNotFound(getAccountInfoErr) {
-				retryErr := clusterClient.Get(ctx, client.ObjectKey{Name: "account"}, &accountInfo)
-				if retryErr == nil {
-					foundAccountInfo = true
-					break
-				}
-				if apierrors.IsNotFound(retryErr) {
-					log.Debug().
-						Str("candidateClusterID", candidateClusterID).
-						Msg("AccountInfo not found in candidate cluster")
-					continue
-				}
-				log.Warn().
-					Err(retryErr).
-					Str("candidateClusterID", candidateClusterID).
-					Msg("failed to get AccountInfo from candidate cluster on retry")
-				continue
-			}
-
-			log.Warn().
-				Err(getAccountInfoErr).
-				Str("candidateClusterID", candidateClusterID).
-				Msg("failed to get AccountInfo from candidate cluster")
-		}
-
-		if !foundAccountInfo {
-			log.Warn().
-				Str("resourceName", resource.GetName()).
-				Str("resourceKind", resource.GetKind()).
-				Str("resourceClusterID", resourceClusterID).
-				Str("contextClusterID", clusterID).
-				Msg("AccountInfo not found in any candidate cluster, requeuing")
+	if accountInfo == nil {
+		accountInfo, err = s.getParentAccountInfo(ctx, log, resource, clusterID, resourceClusterID)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to get parent AccountInfo, requeuing")
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
 	}
@@ -211,7 +155,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
-	fgaGroup, fgaKind, fgaClusterID := mapResourceToFGAObject(gvk.Group, gvk.Kind, resourceClusterID, &accountInfo)
+	fgaGroup, fgaKind, fgaClusterID := mapResourceToFGAObject(gvk.Group, gvk.Kind, resourceClusterID, accountInfo)
 	doc.FGAObject = buildFGAObjectName(fgaGroup, fgaKind, fgaClusterID, resource.GetName(), resource.GetNamespace())
 
 	// Contextual Tuples (Permissions field), build parent hierarchy from AccountInfo
@@ -264,6 +208,66 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		Msg("indexed document")
 
 	return ctrl.Result{}, nil
+}
+
+func (s *IndexableResourceWatcherSubroutine) getParentAccountInfo(ctx context.Context, log *logger.Logger, resource *unstructured.Unstructured, clusterID, resourceClusterID string) (*accountv1alpha1.AccountInfo, error) {
+	accountInfo := accountv1alpha1.AccountInfo{}
+	accountInfoLookupClusters := resolveAccountInfoLookupClusters(resource, clusterID, resourceClusterID)
+	for _, candidateClusterID := range accountInfoLookupClusters {
+		cluster, getClusterErr := s.mgr.GetCluster(ctx, candidateClusterID)
+		if getClusterErr != nil {
+			log.Warn().
+				Err(getClusterErr).
+				Str("candidateClusterID", candidateClusterID).
+				Msg("failed to get candidate cluster for AccountInfo lookup")
+			continue
+		}
+
+		clusterClient := cluster.GetClient()
+		lookupCtx := mccontext.WithCluster(ctx, candidateClusterID)
+		getAccountInfoErr := clusterClient.Get(lookupCtx, client.ObjectKey{Name: "account"}, &accountInfo)
+		if getAccountInfoErr == nil {
+			break
+		}
+		if apierrors.IsNotFound(getAccountInfoErr) {
+			retryErr := clusterClient.Get(ctx, client.ObjectKey{Name: "account"}, &accountInfo)
+			if retryErr == nil {
+				break
+			}
+			if apierrors.IsNotFound(retryErr) {
+				log.Debug().
+					Str("candidateClusterID", candidateClusterID).
+					Msg("AccountInfo not found in candidate cluster")
+				continue
+			}
+			log.Warn().
+				Err(retryErr).
+				Str("candidateClusterID", candidateClusterID).
+				Msg("failed to get AccountInfo from candidate cluster on retry")
+			continue
+		}
+
+		log.Warn().
+			Err(getAccountInfoErr).
+			Str("candidateClusterID", candidateClusterID).
+			Msg("failed to get AccountInfo from candidate cluster")
+	}
+	return &accountInfo, nil
+}
+
+// Returns the AccountInfo for the given resource if it is an Account or Organization, otherwise returns nil.
+func (s *IndexableResourceWatcherSubroutine) getAccountInfo(ctx context.Context, workspacePath string, gvk schema.GroupVersionKind, resource *unstructured.Unstructured) (*accountv1alpha1.AccountInfo, error) {
+	if gvk.Group == v1alpha1.GroupName && (gvk.Kind == v1alpha1.AccountKind || gvk.Kind == v1alpha1.OrganizationKind) {
+		// account and organization are both FGA account objects with the AccountInfo
+		// in their own child workspace, use a direct lookup based on the current workspace path
+		accountWorkspacePath := workspacePath + ":" + resource.GetName()
+		ai, pathErr := s.getAccountInfoFromWorkspacePath(ctx, accountWorkspacePath)
+		if pathErr != nil {
+			return nil, fmt.Errorf("account info not found at path %q: %w", accountWorkspacePath, pathErr)
+		}
+		return ai, nil
+	}
+	return nil, nil
 }
 
 func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID string) (string, error) {
