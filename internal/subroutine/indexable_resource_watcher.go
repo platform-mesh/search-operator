@@ -141,6 +141,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 	}
 
+	// Not all APIResources have an AccountInfo directly associated with them, but there is always a Parent Account or Org that has an AccountInfo
 	if accountInfo == nil {
 		accountInfo, err = s.getParentAccountInfo(ctx, log, resource, clusterID, resourceClusterID)
 		if err != nil {
