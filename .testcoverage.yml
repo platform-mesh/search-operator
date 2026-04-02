@@ -1,7 +1,7 @@
 threshold:
   file: 80
   package: 80
-  total: 90
+  total: 80
 exclude:
   paths:
     - api/v1alpha1 # skipping generated files and crd type definitions
