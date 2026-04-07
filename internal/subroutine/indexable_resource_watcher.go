@@ -143,11 +143,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 
 	// Not all APIResources have an AccountInfo directly associated with them, but there is always a Parent Account or Org that has an AccountInfo
 	if accountInfo == nil {
-		accountInfo, err = s.getParentAccountInfo(ctx, log, resource, clusterID, resourceClusterID)
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to get parent AccountInfo, requeuing")
-			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
-		}
+		accountInfo = s.getParentAccountInfo(ctx, log, resource, clusterID, resourceClusterID)
 	}
 
 	if accountInfo.Spec.Account.Name == "" || accountInfo.Spec.Account.OriginClusterId == "" ||
@@ -211,7 +207,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	return ctrl.Result{}, nil
 }
 
-func (s *IndexableResourceWatcherSubroutine) getParentAccountInfo(ctx context.Context, log *logger.Logger, resource *unstructured.Unstructured, clusterID, resourceClusterID string) (*accountv1alpha1.AccountInfo, error) {
+func (s *IndexableResourceWatcherSubroutine) getParentAccountInfo(ctx context.Context, log *logger.Logger, resource *unstructured.Unstructured, clusterID, resourceClusterID string) *accountv1alpha1.AccountInfo {
 	accountInfo := accountv1alpha1.AccountInfo{}
 	accountInfoLookupClusters := resolveAccountInfoLookupClusters(resource, clusterID, resourceClusterID)
 	for _, candidateClusterID := range accountInfoLookupClusters {
@@ -253,7 +249,8 @@ func (s *IndexableResourceWatcherSubroutine) getParentAccountInfo(ctx context.Co
 			Str("candidateClusterID", candidateClusterID).
 			Msg("failed to get AccountInfo from candidate cluster")
 	}
-	return &accountInfo, nil
+
+	return &accountInfo
 }
 
 // Returns the AccountInfo for the given resource if it is an Account or Organization, otherwise returns nil.
