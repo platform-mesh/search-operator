@@ -168,20 +168,33 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup APIBinding controller for watching resources across workspaces
+	// Setup IndexableResource controllers for each configured searchable resource type
 	for _, GVK := range cfg.SearchableResource.Resources {
 		obj := &unstructured.Unstructured{}
 		obj.SetGroupVersionKind(GVK)
 		idxRssReconciler, err := controller.NewIndexableResource(log, *cfg, mgr, osClient, apiExportEndpointSliceName, obj)
 		if err != nil {
-			setupLog.Error(err, "unable to create APIBinding reconciler")
+			setupLog.Error(err, "unable to create IndexableResource reconciler")
 			os.Exit(1)
 		}
 		if err := idxRssReconciler.SetupWithManager(mgr, maxConcurrentReconciles, obj); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
+			setupLog.Error(err, "unable to create controller", "controller", "IndexableResource")
 			os.Exit(1)
 		}
 	}
+
+	// Setup APIBinding controller: reconciles APIBindings and ensures SearchIndex resources
+	// in the owning org workspace for each bound export.
+	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr)
+	if err != nil {
+		setupLog.Error(err, "unable to create APIBinding reconciler")
+		os.Exit(1)
+	}
+	if err := apiBindingReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
+		os.Exit(1)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

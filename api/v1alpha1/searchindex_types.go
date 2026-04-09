@@ -4,21 +4,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TrackedResource defines a resource type to index
-type TrackedResource struct {
-	// Group is the API group (empty string for core)
-	// +optional
-	Group string `json:"group,omitempty"`
-
-	// Version is the API version
-	// +required
-	Version string `json:"version"`
-
-	// Kind is the resource kind
-	// +required
-	Kind string `json:"kind"`
-}
-
 // SearchIndexSpec defines the desired state of SearchIndex
 type SearchIndexSpec struct {
 	// IndexPrefix is prepended to all index names for this workspace
@@ -37,10 +22,18 @@ type SearchIndexSpec struct {
 	// +kubebuilder:default=1
 	NumberOfReplicas int32 `json:"numberOfReplicas"`
 
-	// TrackedResources lists which resource types to index
-	// If empty, uses a default set of resources
+	// SemanticFields lists field paths to be used for semantic / vector search.
 	// +optional
-	TrackedResources []TrackedResource `json:"trackedResources,omitempty"`
+	SemanticFields []string `json:"semanticFields,omitempty"`
+
+	// FilterableFields lists field paths to be used as exact-match filter facets.
+	// +optional
+	FilterableFields []string `json:"filterableFields,omitempty"`
+
+	// DefaultFields lists all field paths derived from the APIResourceSchemas of
+	// bound APIExports. Every field present in a custom resource schema is reflected here.
+	// +optional
+	DefaultFields []string `json:"defaultFields,omitempty"`
 
 	// Paused stops all indexing when true
 	// +optional
