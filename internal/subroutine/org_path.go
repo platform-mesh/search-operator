@@ -91,3 +91,48 @@ func buildWorkspaceScopedClient(rootCfg *rest.Config, scheme *runtime.Scheme, wo
 	cfg.Host = fmt.Sprintf("%s/clusters/%s", cfg.Host, workspacePath)
 	return client.New(cfg, client.Options{Scheme: scheme})
 }
+
+// sanitizeResourceName produces a valid lowercase Kubernetes name.
+func sanitizeIndexNamePart(value string) string {
+	value = strings.ToLower(value)
+
+	var b strings.Builder
+	b.Grow(len(value))
+	lastWasDash := false
+
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastWasDash = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastWasDash = false
+		default:
+			if !lastWasDash {
+				b.WriteByte('-')
+				lastWasDash = true
+			}
+		}
+	}
+
+	return strings.Trim(b.String(), "-")
+}
+
+func buildCanonicalIndexName(prefix, organizationClusterID, resource string) string {
+	parts := make([]string, 0, 3)
+	parts = append(parts, prefix)
+
+	if p := sanitizeIndexNamePart(organizationClusterID); p != "" {
+		parts = append(parts, p)
+	}
+	if p := sanitizeIndexNamePart(resource); p != "" {
+		parts = append(parts, p)
+	}
+
+	indexName := strings.Join(parts, "-")
+	if len(indexName) > 255 {
+		indexName = indexName[:255]
+	}
+	return strings.Trim(indexName, "-")
+}

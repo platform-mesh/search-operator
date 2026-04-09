@@ -31,7 +31,7 @@ type APIBindingReconciler struct {
 }
 
 // NewAPIBindingReconciler creates a new APIBinding reconciler.
-func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager) (*APIBindingReconciler, error) {
+func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, indexPrefix string) (*APIBindingReconciler, error) {
 	localMgr := mcMgr.GetLocalManager()
 
 	orgsClient, err := GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
@@ -39,7 +39,7 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager) (*APIB
 		return nil, fmt.Errorf("create root:orgs scoped client: %w", err)
 	}
 
-	watcherSubroutine, err := subroutine.NewAPIBindingWatcherSubroutine(mcMgr, orgsClient, localMgr.GetConfig())
+	watcherSubroutine, err := subroutine.NewAPIBindingWatcherSubroutine(mcMgr, orgsClient, localMgr.GetConfig(), indexPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create APIBindingWatcherSubroutine: %w", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	kcpapisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
@@ -27,24 +26,26 @@ import (
 // When a binding takes place in an org then all indexes are updated for the
 // fields contained in the bound APIResourceSchemas.
 type apiBindingWatcherSubroutine struct {
-	mgr        mcmanager.Manager
-	orgsClient client.Client // scoped to root:orgs for Workspace lookups
-	rootCfg    *rest.Config  // clean base KCP REST config (no path) for building workspace clients
+	mgr         mcmanager.Manager
+	orgsClient  client.Client // scoped to root:orgs for Workspace lookups
+	rootCfg     *rest.Config  // clean base KCP REST config (no path) for building workspace clients
+	indexPrefix string
 }
 
 // NewAPIBindingWatcherSubroutine creates a new APIBinding watcher subroutine.
 // orgsClient must be scoped to the root:orgs workspace.
 // localCfg must be the admin KCP REST config.
-func NewAPIBindingWatcherSubroutine(mgr mcmanager.Manager, orgsClient client.Client, localCfg *rest.Config) (*apiBindingWatcherSubroutine, error) {
+func NewAPIBindingWatcherSubroutine(mgr mcmanager.Manager, orgsClient client.Client, localCfg *rest.Config, indexPrefix string) (*apiBindingWatcherSubroutine, error) {
 	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &apiBindingWatcherSubroutine{
-		mgr:        mgr,
-		orgsClient: orgsClient,
-		rootCfg:    rootCfg,
+		mgr:         mgr,
+		orgsClient:  orgsClient,
+		rootCfg:     rootCfg,
+		indexPrefix: indexPrefix,
 	}, nil
 }
 
@@ -96,8 +97,10 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 	}
 
 	orgWorkspacePath := fmt.Sprintf("root:orgs:%s", orgName)
-	if err := s.ensureSearchIndex(ctx, log, orgWorkspacePath, orgClusterID, binding.Name, defaultFields); err != nil {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("ensure SearchIndex for binding %q: %w", binding.Name, err), true, false)
+	for _, br := range binding.Status.BoundResources {
+		if err := s.ensureSearchIndex(ctx, log, orgWorkspacePath, orgClusterID, br.Resource, defaultFields); err != nil {
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("ensure SearchIndex for binding %q resource %q: %w", binding.Name, br.Resource, err), true, false)
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -156,7 +159,7 @@ func (s *apiBindingWatcherSubroutine) resolveDefaultFields(ctx context.Context, 
 }
 
 // ensureSearchIndex creates or updates the SearchIndex in the org workspace.
-// The resource is named after the binding so each binding gets its own SearchIndex.
+// The resource is named after the derived index prefix so each binding gets its own SearchIndex.
 // TODO: maybe add a timestamp to avoid multiple edits of the SearchIndex if the
 // APIResourceSchemas change and updates all bindings in an org
 func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
@@ -164,7 +167,7 @@ func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 	log *logger.Logger,
 	orgWorkspacePath string,
 	orgClusterID string,
-	bindingName string,
+	resource string,
 	defaultFields []string,
 ) error {
 	orgClient, err := buildWorkspaceScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), orgWorkspacePath)
@@ -172,7 +175,7 @@ func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 		return fmt.Errorf("build org client for %q: %w", orgWorkspacePath, err)
 	}
 
-	searchIndexName := sanitizeResourceName(bindingName)
+	searchIndexName := buildCanonicalIndexName(s.indexPrefix, orgClusterID, resource)
 	existing := &v1alpha1.SearchIndex{}
 	err = orgClient.Get(ctx, types.NamespacedName{Name: searchIndexName}, existing)
 
@@ -183,7 +186,7 @@ func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 				Name: searchIndexName,
 			},
 			Spec: v1alpha1.SearchIndexSpec{
-				IndexPrefix:           sanitizeIndexNamePart(bindingName),
+				IndexPrefix:           sanitizeIndexNamePart(s.indexPrefix),
 				OrganizationClusterID: orgClusterID,
 				NumberOfShards:        1,
 				NumberOfReplicas:      1,
@@ -235,24 +238,4 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
-}
-
-// sanitizeResourceName produces a valid lowercase Kubernetes name.
-func sanitizeResourceName(name string) string {
-	s := strings.ToLower(name)
-	var b strings.Builder
-	lastWasDash := false
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
-			b.WriteRune(r)
-			lastWasDash = false
-		default:
-			if !lastWasDash {
-				b.WriteByte('-')
-				lastWasDash = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }
