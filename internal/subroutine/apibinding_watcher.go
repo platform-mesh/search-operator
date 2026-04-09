@@ -14,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+
+	"github.com/platform-mesh/search-operator/api/v1alpha1"
 )
 
 // apiBindingWatcherSubroutine watches APIBinding resources across workspaces
@@ -92,7 +94,7 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 	}
 
 	switch apiExport.Name {
-	case "core.platform-mesh.io":
+	case v1alpha1.GroupName:
 		// TODO: get information about CRDs from the APIExport to index some metadata
 		for _, pc := range apiExport.Spec.PermissionClaims {
 			_ = schema.GroupVersionResource{Group: pc.Group, Resource: pc.Resource}

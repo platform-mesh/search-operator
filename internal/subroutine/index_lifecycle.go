@@ -88,10 +88,7 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		numberShards = 1
 	}
 
-	numReplicas := searchIndex.Spec.NumberOfReplicas
-	if numReplicas < 0 {
-		numReplicas = 0
-	}
+	numReplicas := max(searchIndex.Spec.NumberOfReplicas, 0)
 	desiredIndexName := buildCanonicalIndexName(s.staticIndexPrefix, specPrefix, organizationClusterID)
 
 	log.Info().
@@ -132,7 +129,7 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 	created := false
 	replicasUpdated := false
 	if !desiredExists && !legacyExists {
-		if err := s.osClient.CreateIndex(ctx, desiredIndexName, numberShards, numReplicas, ""); err != nil {
+		if err := s.osClient.CreateIndex(ctx, desiredIndexName, numberShards, numReplicas, opensearch.DefaultIndexMapping()); err != nil {
 			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to create index %q: %w", desiredIndexName, err), true, true)
 		}
 		created = true

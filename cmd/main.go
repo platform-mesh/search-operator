@@ -29,6 +29,7 @@ import (
 	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	accountv1alpha1 "github.com/platform-mesh/account-operator/api/v1alpha1"
 	corev1alpha1 "github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/config"
 	"github.com/platform-mesh/search-operator/internal/controller"
@@ -51,6 +52,7 @@ func init() {
 
 	// Add our types
 	utilruntime.Must(corev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(accountv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -132,7 +134,7 @@ func main() {
 		LeaderElectionID:       "search-operator.platform-mesh.io",
 	}
 
-	// Create the smulticluster manager
+	// Create the multicluster manager
 	mgr, err := mcmanager.New(kcpCfg, provider, mgrOpts)
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")
