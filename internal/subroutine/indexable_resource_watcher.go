@@ -4,16 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
 	"sigs.k8s.io/yaml"
 
-	kcpcore "github.com/kcp-dev/sdk/apis/core"
-	kcpcorev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
-	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
@@ -48,14 +45,10 @@ type IndexableResourceWatcherSubroutine struct {
 // NewIndexableResourceWatcherSubroutine creates a new IndexableResource watcher subroutine.
 // localCfg must be the admin KCP REST config
 func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
-	// Strip any existing path so we have a clean base URL for workspace routing.
-	rootCfg := rest.CopyConfig(localCfg)
-	parsed, err := url.Parse(rootCfg.Host)
+	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
-		return nil, fmt.Errorf("parse KCP host URL: %w", err)
+		return nil, err
 	}
-	parsed.Path = ""
-	rootCfg.Host = parsed.String()
 
 	return &IndexableResourceWatcherSubroutine{
 		mgr:           mgr,
@@ -87,18 +80,18 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
-	clusterID, workspacePath, err := s.getWorkspacePath(ctx)
+	clusterID, workspacePath, err := getWorkspaceClusterAndPath(ctx, s.mgr)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
 	}
 
-	orgName, err := s.extractOrgFromKCPPath(workspacePath)
+	orgName, err := extractOrgFromPath(workspacePath)
 	if err != nil {
 		log.Debug().Msg("Not in an org workspace, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	orgID, err := s.getOrgID(ctx, orgName)
+	orgID, err := getOrgClusterID(ctx, s.orgsClient, orgName)
 	if err != nil {
 		log.Debug().Err(err).Msg("org ID not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -278,54 +271,6 @@ func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID s
 	return searchIndex.Status.IndexName, nil
 }
 
-func (s *IndexableResourceWatcherSubroutine) getWorkspacePath(ctx context.Context) (clusterID string, workspacePath string, err error) {
-	id, ok := mccontext.ClusterFrom(ctx)
-	if !ok {
-		return "", "", fmt.Errorf("cluster not found in context")
-	}
-
-	cluster, err := s.mgr.GetCluster(ctx, id)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get cluster %q: %w", id, err)
-	}
-
-	// Use client.New with the cluster's config directly — cluster.GetClient() is scoped
-	// to the APIExport's exported APIs and cannot reach core.kcp.io resources.
-	cl, err := client.New(cluster.GetConfig(), client.Options{Scheme: cluster.GetScheme()})
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create client for cluster %q: %w", id, err)
-	}
-	lc := &kcpcorev1alpha1.LogicalCluster{}
-	if err := cl.Get(ctx, client.ObjectKey{Name: kcpcorev1alpha1.LogicalClusterName}, lc); err != nil {
-		return "", "", fmt.Errorf("failed to get LogicalCluster for %q: %w", id, err)
-	}
-
-	path, ok := lc.Annotations[kcpcore.LogicalClusterPathAnnotationKey]
-	if !ok {
-		return "", "", fmt.Errorf("LogicalCluster %q missing %s annotation", id, kcpcore.LogicalClusterPathAnnotationKey)
-	}
-
-	return id, path, nil
-}
-
-func (s *IndexableResourceWatcherSubroutine) extractOrgFromKCPPath(clusterName string) (string, error) {
-	parts := strings.Split(clusterName, ":")
-	if len(parts) < 3 || parts[0] != "root" || parts[1] != "orgs" {
-		return "", fmt.Errorf("not an org workspace")
-	}
-
-	return parts[2], nil
-}
-
-func (s *IndexableResourceWatcherSubroutine) getOrgID(ctx context.Context, orgName string) (string, error) {
-	workspace := &kcptenancyv1alpha1.Workspace{}
-	if err := s.orgsClient.Get(ctx, types.NamespacedName{Name: orgName}, workspace); err != nil {
-		return "", fmt.Errorf("failed to get Workspace %q: %w", orgName, err)
-	}
-
-	return workspace.Spec.Cluster, nil
-}
-
 func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
 	resource *unstructured.Unstructured,
 	clusterName string,
@@ -431,15 +376,7 @@ func resolveSpecClusterID(resource *unstructured.Unstructured) string {
 // getAccountInfoFromWorkspacePath builds a workspace-scoped REST client from the base KCP
 // config and fetches the singleton AccountInfo named "account" from that workspace.
 func (s *IndexableResourceWatcherSubroutine) getAccountInfoFromWorkspacePath(ctx context.Context, accountWorkspacePath string) (*accountv1alpha1.AccountInfo, error) {
-	scopedCfg := rest.CopyConfig(s.rootCfg)
-	parsed, err := url.Parse(scopedCfg.Host)
-	if err != nil {
-		return nil, fmt.Errorf("parse KCP host URL: %w", err)
-	}
-	parsed.Path = fmt.Sprintf("/clusters/%s", accountWorkspacePath)
-	scopedCfg.Host = parsed.String()
-
-	cl, err := client.New(scopedCfg, client.Options{Scheme: s.mgr.GetLocalManager().GetScheme()})
+	cl, err := buildWorkspaceScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), accountWorkspacePath)
 	if err != nil {
 		return nil, fmt.Errorf("create scoped client for %q: %w", accountWorkspacePath, err)
 	}
@@ -456,18 +393,18 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
-	clusterID, workspacePath, err := s.getWorkspacePath(ctx)
+	clusterID, workspacePath, err := getWorkspaceClusterAndPath(ctx, s.mgr)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
 	}
 
-	orgName, err := s.extractOrgFromKCPPath(workspacePath)
+	orgName, err := extractOrgFromPath(workspacePath)
 	if err != nil {
 		log.Debug().Msg("Not in an org workspace, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	orgID, err := s.getOrgID(ctx, orgName)
+	orgID, err := getOrgClusterID(ctx, s.orgsClient, orgName)
 	if err != nil {
 		log.Debug().Err(err).Msg("Workspace not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil

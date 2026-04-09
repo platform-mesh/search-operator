@@ -3,14 +3,10 @@ package subroutine
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 
 	kcpapisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
-	kcpcore "github.com/kcp-dev/sdk/apis/core"
-	kcpcorev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
-	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	"github.com/platform-mesh/golang-commons/errors"
 	"github.com/platform-mesh/golang-commons/logger"
@@ -40,13 +36,10 @@ type apiBindingWatcherSubroutine struct {
 // orgsClient must be scoped to the root:orgs workspace.
 // localCfg must be the admin KCP REST config.
 func NewAPIBindingWatcherSubroutine(mgr mcmanager.Manager, orgsClient client.Client, localCfg *rest.Config) (*apiBindingWatcherSubroutine, error) {
-	rootCfg := rest.CopyConfig(localCfg)
-	parsed, err := url.Parse(rootCfg.Host)
+	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
-		return nil, fmt.Errorf("parse KCP host URL: %w", err)
+		return nil, err
 	}
-	parsed.Path = ""
-	rootCfg.Host = parsed.String()
 
 	return &apiBindingWatcherSubroutine{
 		mgr:        mgr,
@@ -80,18 +73,18 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 		return ctrl.Result{}, nil
 	}
 
-	workspacePath, err := s.getWorkspacePath(ctx)
+	_, workspacePath, err := getWorkspaceClusterAndPath(ctx, s.mgr)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("get workspace path: %w", err), true, false)
 	}
 
-	orgName, err := extractOrgNameFromPath(workspacePath)
+	orgName, err := extractOrgFromPath(workspacePath)
 	if err != nil {
 		log.Debug().Str("workspacePath", workspacePath).Msg("APIBinding is not in an org workspace, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	orgClusterID, err := s.getOrgClusterID(ctx, orgName)
+	orgClusterID, err := getOrgClusterID(ctx, s.orgsClient, orgName)
 	if err != nil {
 		log.Debug().Err(err).Str("orgName", orgName).Msg("org Workspace not found, requeuing")
 		return ctrl.Result{Requeue: true}, nil
@@ -115,53 +108,6 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 // TODO: there should still be some strategy for cleanup of old SearchIndexes
 func (s *apiBindingWatcherSubroutine) Finalize(_ context.Context, _ runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	return ctrl.Result{}, nil
-}
-
-// getWorkspacePath reads the LogicalCluster from the current workspace
-// and returns its path annotation (e.g. "root:orgs:acme").
-func (s *apiBindingWatcherSubroutine) getWorkspacePath(ctx context.Context) (string, error) {
-	cluster, err := s.mgr.ClusterFromContext(ctx)
-	if err != nil {
-		return "", fmt.Errorf("get cluster from context: %w", err)
-	}
-
-	// cluster.GetClient() is scoped to the APIExport virtual workspace and cannot
-	// reach core.kcp.io resources; use a direct client from the cluster config.
-	cl, err := client.New(cluster.GetConfig(), client.Options{Scheme: cluster.GetScheme()})
-	if err != nil {
-		return "", fmt.Errorf("build cluster client: %w", err)
-	}
-
-	lc := &kcpcorev1alpha1.LogicalCluster{}
-	if err := cl.Get(ctx, client.ObjectKey{Name: kcpcorev1alpha1.LogicalClusterName}, lc); err != nil {
-		return "", fmt.Errorf("get LogicalCluster: %w", err)
-	}
-
-	path, ok := lc.Annotations[kcpcore.LogicalClusterPathAnnotationKey]
-	if !ok {
-		return "", fmt.Errorf("LogicalCluster missing %s annotation", kcpcore.LogicalClusterPathAnnotationKey)
-	}
-
-	return path, nil
-}
-
-// extractOrgNameFromPath parses "root:orgs:acme[:...]" and returns "acme".
-func extractOrgNameFromPath(path string) (string, error) {
-	parts := strings.Split(path, ":")
-	if len(parts) < 3 || parts[0] != "root" || parts[1] != "orgs" {
-		return "", fmt.Errorf("path %q is not under root:orgs", path)
-	}
-	return parts[2], nil
-}
-
-// getOrgClusterID returns the logical cluster ID of the org workspace by looking
-// up the Workspace object in root:orgs.
-func (s *apiBindingWatcherSubroutine) getOrgClusterID(ctx context.Context, orgName string) (string, error) {
-	ws := &kcptenancyv1alpha1.Workspace{}
-	if err := s.orgsClient.Get(ctx, types.NamespacedName{Name: orgName}, ws); err != nil {
-		return "", fmt.Errorf("get Workspace %q in root:orgs: %w", orgName, err)
-	}
-	return ws.Spec.Cluster, nil
 }
 
 // resolveDefaultFields collects the top-level field names from every APIResourceSchema
@@ -221,7 +167,7 @@ func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 	bindingName string,
 	defaultFields []string,
 ) error {
-	orgClient, err := s.buildOrgClient(orgWorkspacePath)
+	orgClient, err := buildWorkspaceScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), orgWorkspacePath)
 	if err != nil {
 		return fmt.Errorf("build org client for %q: %w", orgWorkspacePath, err)
 	}
@@ -276,12 +222,6 @@ func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 	}
 
 	return nil
-}
-
-func (s *apiBindingWatcherSubroutine) buildOrgClient(workspacePath string) (client.Client, error) {
-	cfg := rest.CopyConfig(s.rootCfg)
-	cfg.Host = fmt.Sprintf("%s/clusters/%s", cfg.Host, workspacePath)
-	return client.New(cfg, client.Options{Scheme: s.mgr.GetLocalManager().GetScheme()})
 }
 
 // stringSlicesEqual returns true when a and b contain the same elements in the same order.
