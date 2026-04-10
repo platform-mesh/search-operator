@@ -97,7 +97,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
+	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID, resource.GroupVersionKind().Kind)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -261,9 +261,10 @@ func (s *IndexableResourceWatcherSubroutine) getAccountInfo(ctx context.Context,
 	return nil, nil
 }
 
-func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID string) (string, error) {
+func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID string, resourceName string) (string, error) {
 	searchIndex := v1alpha1.SearchIndex{}
-	err := orgsClient.Get(ctx, types.NamespacedName{Name: orgID}, &searchIndex)
+	name := fmt.Sprintf("pm-orgs-%s-%s", orgID, sanitizeIndexNamePart(resourceName))
+	err := orgsClient.Get(ctx, types.NamespacedName{Name: name}, &searchIndex)
 	if err != nil {
 		return "", fmt.Errorf("failed to get cluster %q: %w", orgID, err)
 	}
@@ -410,7 +411,7 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
+	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID, resource.GroupVersionKind().Group)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
