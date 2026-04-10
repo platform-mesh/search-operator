@@ -96,9 +96,8 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("resolve default fields for binding %q: %w", binding.Name, err), true, false)
 	}
 
-	orgWorkspacePath := fmt.Sprintf("root:orgs:%s", orgName)
 	for _, br := range binding.Status.BoundResources {
-		if err := s.ensureSearchIndex(ctx, log, orgWorkspacePath, orgClusterID, br.Resource, defaultFields); err != nil {
+		if err := s.ensureSearchIndex(ctx, log, orgName, orgClusterID, br.Resource, defaultFields); err != nil {
 			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("ensure SearchIndex for binding %q resource %q: %w", binding.Name, br.Resource, err), true, false)
 		}
 	}
@@ -165,19 +164,19 @@ func (s *apiBindingWatcherSubroutine) resolveDefaultFields(ctx context.Context, 
 func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 	ctx context.Context,
 	log *logger.Logger,
-	orgWorkspacePath string,
+	orgName string,
 	orgClusterID string,
 	resource string,
 	defaultFields []string,
 ) error {
-	orgClient, err := buildWorkspaceScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), orgWorkspacePath)
+	orgsClient, err := buildWorkspaceScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), "root:orgs")
 	if err != nil {
-		return fmt.Errorf("build org client for %q: %w", orgWorkspacePath, err)
+		return fmt.Errorf("build org client for %q: %w", orgName, err)
 	}
 
 	searchIndexName := buildCanonicalIndexName(s.indexPrefix, orgClusterID, resource)
 	existing := &v1alpha1.SearchIndex{}
-	err = orgClient.Get(ctx, types.NamespacedName{Name: searchIndexName}, existing)
+	err = orgsClient.Get(ctx, types.NamespacedName{Name: searchIndexName}, existing)
 
 	switch {
 	case apierrors.IsNotFound(err):
@@ -193,12 +192,12 @@ func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 				DefaultFields:         defaultFields,
 			},
 		}
-		if createErr := orgClient.Create(ctx, desired); createErr != nil {
-			return fmt.Errorf("create SearchIndex %q in %q: %w", searchIndexName, orgWorkspacePath, createErr)
+		if createErr := orgsClient.Create(ctx, desired); createErr != nil {
+			return fmt.Errorf("create SearchIndex %q in %q: %w", searchIndexName, orgName, createErr)
 		}
 		log.Info().
 			Str("searchIndex", searchIndexName).
-			Str("orgWorkspace", orgWorkspacePath).
+			Str("orgWorkspace", orgName).
 			Int("defaultFields", len(defaultFields)).
 			Msg("created SearchIndex")
 
@@ -211,15 +210,15 @@ func (s *apiBindingWatcherSubroutine) ensureSearchIndex(
 		}
 		updated := existing.DeepCopy()
 		updated.Spec.DefaultFields = defaultFields
-		if updateErr := orgClient.Update(ctx, updated); updateErr != nil {
+		if updateErr := orgsClient.Update(ctx, updated); updateErr != nil {
 			if apierrors.IsConflict(updateErr) {
 				return fmt.Errorf("conflict updating SearchIndex %q, will requeue: %w", searchIndexName, updateErr)
 			}
-			return fmt.Errorf("update SearchIndex %q in %q: %w", searchIndexName, orgWorkspacePath, updateErr)
+			return fmt.Errorf("update SearchIndex %q in %q: %w", searchIndexName, orgName, updateErr)
 		}
 		log.Info().
 			Str("searchIndex", searchIndexName).
-			Str("orgWorkspace", orgWorkspacePath).
+			Str("orgWorkspace", orgName).
 			Int("defaultFields", len(defaultFields)).
 			Msg("updated SearchIndex default fields")
 	}
