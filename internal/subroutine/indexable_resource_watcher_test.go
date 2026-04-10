@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	accountv1alpha1 "github.com/platform-mesh/account-operator/api/v1alpha1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestBuildPayloadSeparatesRawJSONFromText(t *testing.T) {
@@ -61,6 +63,43 @@ func TestBuildPayloadSeparatesRawJSONFromText(t *testing.T) {
 	// text should NOT contain managedFields
 	if strings.Contains(text, "managedFields") {
 		t.Fatal("text should not contain managedFields")
+	}
+}
+
+func TestBuildIndexedResourceSectionsAddsSemanticShadowFields(t *testing.T) {
+	resource := &unstructured.Unstructured{
+		Object: map[string]any{
+			"spec": map[string]any{
+				"displayName": "Search Operator",
+				"details": map[string]any{
+					"summary": "Indexes resources",
+				},
+			},
+			"status": map[string]any{
+				"message": "Ready",
+			},
+		},
+	}
+
+	spec, status, err := buildIndexedResourceSections(resource, []string{"spec.displayName", "spec.details.summary", "status.message"})
+	if err != nil {
+		t.Fatalf("buildIndexedResourceSections() returned error: %v", err)
+	}
+
+	if got := spec["displayName"]; got != "Search Operator" {
+		t.Fatalf("spec.displayName = %v, want %q", got, "Search Operator")
+	}
+	if got := spec["displayName_semantic"]; got != "Search Operator" {
+		t.Fatalf("spec.displayName_semantic = %v, want %q", got, "Search Operator")
+	}
+
+	details := spec["details"].(map[string]any)
+	if got := details["summary_semantic"]; got != "Indexes resources" {
+		t.Fatalf("spec.details.summary_semantic = %v, want %q", got, "Indexes resources")
+	}
+
+	if got := status["message_semantic"]; got != "Ready" {
+		t.Fatalf("status.message_semantic = %v, want %q", got, "Ready")
 	}
 }
 
@@ -216,6 +255,22 @@ func TestResolveResourceClusterID(t *testing.T) {
 
 	if got := resolveResourceClusterID(resourceWithoutAnnotation, "fallback"); got != "fallback" {
 		t.Fatalf("resolveResourceClusterID() without annotation = %q, want %q", got, "fallback")
+	}
+}
+
+func TestSearchIndexResourceNameUsesRESTMapperPlural(t *testing.T) {
+	gvk := schema.GroupVersionKind{Group: "core.platform-mesh.io", Version: "v1alpha1", Kind: "Account"}
+	gvr := schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: "accounts"}
+
+	mapper := apimeta.NewDefaultRESTMapper([]schema.GroupVersion{{Group: gvk.Group, Version: gvk.Version}})
+	mapper.AddSpecific(gvk, gvr, schema.GroupVersionResource{Group: gvk.Group, Version: gvk.Version, Resource: "account"}, apimeta.RESTScopeRoot)
+
+	got, err := searchIndexResourceName(gvk, mapper)
+	if err != nil {
+		t.Fatalf("searchIndexResourceName() returned error: %v", err)
+	}
+	if got != "accounts" {
+		t.Fatalf("searchIndexResourceName() = %q, want %q", got, "accounts")
 	}
 }
 

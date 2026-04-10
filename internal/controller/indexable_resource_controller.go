@@ -10,7 +10,6 @@ import (
 	"github.com/platform-mesh/golang-commons/logger"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -24,21 +23,14 @@ import (
 type IndexableResourceReconciler struct {
 	log         *logger.Logger
 	mclifecycle *multicluster.LifecycleManager
-	allClient   client.Client
 	cfg         config.Config
 	resource    unstructured.Unstructured
 }
 
 // NewIndexableResourceReconciler creates a new IndexableResource reconciler
 // If osClient is nil, only the IndexableResourceWatcher subroutine is used (no indexing)
-func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string, resources *unstructured.Unstructured) (*IndexableResourceReconciler, error) {
+func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager.Manager, osClient *opensearch.Client, resources *unstructured.Unstructured) (*IndexableResourceReconciler, error) {
 	localMgr := mcMgr.GetLocalManager()
-
-	// Create a wildcard client for cross-workspace queries
-	allClient, err := GetAllClient(localMgr.GetConfig(), localMgr.GetScheme())
-	if err != nil {
-		return nil, err
-	}
 
 	// Create a client scoped to root:orgs for Workspace lookups
 	orgsClient, err := GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
@@ -47,15 +39,20 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 	}
 
 	// Build subroutines list
-	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName, localMgr.GetConfig())
+	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(
+		mcMgr,
+		orgsClient,
+		osClient,
+		localMgr.GetConfig(),
+		cfg.OpenSearch.IndexNamePrefix,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create IndexableResourceWatcherSubroutine: %w", err)
 	}
 	subroutines := []lifecyclesubroutine.Subroutine{watcherSubroutine}
 
 	return &IndexableResourceReconciler{
-		log:       log,
-		allClient: allClient,
+		log: log,
 		mclifecycle: builder.NewBuilder("search-operator", "IndexableResourceReconciler", subroutines, log).
 			BuildMultiCluster(mcMgr),
 		cfg:      cfg,

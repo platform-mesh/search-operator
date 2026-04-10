@@ -17,6 +17,7 @@ import (
 	fgamodel "github.com/platform-mesh/golang-commons/fga/model"
 	"github.com/platform-mesh/golang-commons/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,29 +35,27 @@ import (
 
 // IndexableResourceWatcherSubroutine watches IndexableResource resources across workspaces
 type IndexableResourceWatcherSubroutine struct {
-	mgr           mcmanager.Manager
-	allClient     client.Client
-	orgsClient    client.Client // scoped to root:orgs for Workspace lookups
-	osClient      *opensearch.Client
-	apiExportName string
-	rootCfg       *rest.Config // base KCP REST config (path stripped) for workspace-scoped clients
+	mgr         mcmanager.Manager
+	orgsClient  client.Client // scoped to root:orgs for Workspace lookups
+	osClient    *opensearch.Client
+	rootCfg     *rest.Config // base KCP REST config (path stripped) for workspace-scoped clients
+	indexPrefix string
 }
 
 // NewIndexableResourceWatcherSubroutine creates a new IndexableResource watcher subroutine.
 // localCfg must be the admin KCP REST config
-func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
+func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, orgsClient client.Client, osClient *opensearch.Client, localCfg *rest.Config, indexPrefix string) (*IndexableResourceWatcherSubroutine, error) {
 	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &IndexableResourceWatcherSubroutine{
-		mgr:           mgr,
-		allClient:     allClient,
-		orgsClient:    orgsClient,
-		osClient:      osClient,
-		apiExportName: apiExportName,
-		rootCfg:       rootCfg,
+		mgr:         mgr,
+		orgsClient:  orgsClient,
+		osClient:    osClient,
+		rootCfg:     rootCfg,
+		indexPrefix: indexPrefix,
 	}, nil
 }
 
@@ -97,12 +96,13 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
+	orgWorkspacePath := fmt.Sprintf("root:orgs:%s", orgName)
+	searchIndex, err := s.getSearchIndexForResource(ctx, orgWorkspacePath, orgID, clusterID, resource.GroupVersionKind())
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if indexName == "" {
+	if searchIndex.Status.IndexName == "" {
 		log.Debug().Str("orgID", orgID).Msg("search index not ready yet, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -125,6 +125,14 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.OrganizationID = orgID
 	doc.Labels = resource.GetLabels()
 	doc.Annotations = resource.GetAnnotations()
+	doc.Spec, doc.Status, err = buildIndexedResourceSections(resource, searchIndex.Spec.SemanticFields)
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(
+			fmt.Errorf("failed to build indexed sections for %s/%s: %w", resource.GetKind(), resource.GetName(), err),
+			true,
+			false,
+		)
+	}
 
 	accountInfo, err := s.getAccountInfo(ctx, workspacePath, gvk, resource)
 	if err != nil {
@@ -185,7 +193,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.PayloadRawJSON = payloadRawJSON
 	doc.PayloadText = payloadText
 
-	if err := s.osClient.IndexDocument(ctx, indexName, docID, doc); err != nil {
+	if err := s.osClient.IndexDocument(ctx, searchIndex.Status.IndexName, docID, doc); err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(
 			fmt.Errorf("failed to index document %s: %w", docID, err), true, false,
 		)
@@ -193,7 +201,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 
 	log.Info().
 		Str("docID", docID).
-		Str("index", indexName).
+		Str("index", searchIndex.Status.IndexName).
 		Str("kind", resource.GetKind()).
 		Msg("indexed document")
 
@@ -261,14 +269,66 @@ func (s *IndexableResourceWatcherSubroutine) getAccountInfo(ctx context.Context,
 	return nil, nil
 }
 
-func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID string) (string, error) {
+func getSearchIndex(ctx context.Context, searchIndexClient client.Client, searchIndexName string) (*v1alpha1.SearchIndex, error) {
 	searchIndex := v1alpha1.SearchIndex{}
-	err := orgsClient.Get(ctx, types.NamespacedName{Name: orgID}, &searchIndex)
+	err := searchIndexClient.Get(ctx, types.NamespacedName{Name: searchIndexName}, &searchIndex)
 	if err != nil {
-		return "", fmt.Errorf("failed to get cluster %q: %w", orgID, err)
+		return nil, fmt.Errorf("get SearchIndex %q: %w", searchIndexName, err)
 	}
 
-	return searchIndex.Status.IndexName, nil
+	return &searchIndex, nil
+}
+
+func (s *IndexableResourceWatcherSubroutine) getSearchIndexForResource(
+	ctx context.Context,
+	orgWorkspacePath string,
+	orgID string,
+	clusterID string,
+	gvk schema.GroupVersionKind,
+) (*v1alpha1.SearchIndex, error) {
+	searchIndexName, err := s.searchIndexNameForGVK(ctx, clusterID, orgID, gvk)
+	if err != nil {
+		return nil, err
+	}
+
+	orgClient, err := buildWorkspaceScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), orgWorkspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("build org client for %q: %w", orgWorkspacePath, err)
+	}
+
+	return getSearchIndex(ctx, orgClient, searchIndexName)
+}
+
+func (s *IndexableResourceWatcherSubroutine) searchIndexNameForGVK(
+	ctx context.Context,
+	clusterID string,
+	orgID string,
+	gvk schema.GroupVersionKind,
+) (string, error) {
+	cluster, err := s.mgr.GetCluster(ctx, clusterID)
+	if err != nil {
+		return "", fmt.Errorf("get cluster %q for %s: %w", clusterID, gvk.String(), err)
+	}
+
+	resourceName, err := searchIndexResourceName(gvk, cluster.GetRESTMapper())
+	if err != nil {
+		return "", err
+	}
+
+	return buildCanonicalIndexName(s.indexPrefix, orgID, resourceName), nil
+}
+
+func searchIndexResourceName(gvk schema.GroupVersionKind, mapper apimeta.RESTMapper) (string, error) {
+	if mapper == nil {
+		return "", fmt.Errorf("missing REST mapper for %s", gvk.String())
+	}
+
+	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		return "", fmt.Errorf("resolve resource name for %s: %w", gvk.String(), err)
+	}
+
+	return mapping.Resource.Resource, nil
 }
 
 func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
@@ -305,6 +365,100 @@ func buildPayload(resource *unstructured.Unstructured) (string, string, error) {
 	}
 
 	return string(jsonBytes), string(yamlBytes), nil
+}
+
+func buildIndexedResourceSections(resource *unstructured.Unstructured, semanticFields []string) (map[string]any, map[string]any, error) {
+	raw := resource.DeepCopy().Object
+	if err := addSemanticShadowFields(raw, semanticFields); err != nil {
+		return nil, nil, err
+	}
+
+	spec, err := nestedObject(raw, "spec")
+	if err != nil {
+		return nil, nil, err
+	}
+	status, err := nestedObject(raw, "status")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return spec, status, nil
+}
+
+func addSemanticShadowFields(resource map[string]any, semanticFields []string) error {
+	for _, fieldPath := range semanticFields {
+		parts := splitSearchFieldPath(fieldPath)
+		if len(parts) == 0 {
+			continue
+		}
+
+		value, found, err := unstructured.NestedFieldCopy(resource, parts...)
+		if err != nil {
+			return fmt.Errorf("get semantic source field %q: %w", fieldPath, err)
+		}
+		if !found {
+			continue
+		}
+
+		semanticValue, ok := semanticShadowValue(value)
+		if !ok {
+			continue
+		}
+
+		shadowParts := append([]string(nil), parts...)
+		shadowParts[len(shadowParts)-1] = shadowParts[len(shadowParts)-1] + "_semantic"
+		if err := unstructured.SetNestedField(resource, semanticValue, shadowParts...); err != nil {
+			return fmt.Errorf("set semantic shadow field %q: %w", strings.Join(shadowParts, "."), err)
+		}
+	}
+
+	return nil
+}
+
+func nestedObject(resource map[string]any, field string) (map[string]any, error) {
+	value, found, err := unstructured.NestedFieldCopy(resource, field)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", field, err)
+	}
+	if !found || value == nil {
+		return nil, nil
+	}
+
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s is not an object", field)
+	}
+
+	return object, nil
+}
+
+func semanticShadowValue(value any) (string, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return "", false
+	case string:
+		return typed, true
+	default:
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			return "", false
+		}
+		return string(raw), true
+	}
+}
+
+func splitSearchFieldPath(fieldPath string) []string {
+	rawParts := strings.Split(strings.TrimSpace(fieldPath), ".")
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+
+	return parts
 }
 
 func mapResourceToFGAObject(group, kind, clusterID string, accountInfo *accountv1alpha1.AccountInfo) (fgaGroup, fgaKind, fgaClusterID string) {
@@ -410,26 +564,27 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
+	orgWorkspacePath := fmt.Sprintf("root:orgs:%s", orgName)
+	searchIndex, err := s.getSearchIndexForResource(ctx, orgWorkspacePath, orgID, clusterID, resource.GroupVersionKind())
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if indexName == "" {
+	if searchIndex.Status.IndexName == "" {
 		log.Warn().Str("orgID", orgID).Msg("SearchIndex has no IndexName, cannot delete document")
 		return ctrl.Result{}, nil
 	}
 
 	resourceClusterID := resolveResourceClusterID(resource, clusterID)
 	docID := s.generateDocumentID(resource, resourceClusterID)
-	if err := s.osClient.DeleteDocument(ctx, indexName, docID); err != nil {
+	if err := s.osClient.DeleteDocument(ctx, searchIndex.Status.IndexName, docID); err != nil {
 		log.Error().Err(err).Msg("failed to delete document from OpenSearch")
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
 	}
 
 	log.Info().
 		Str("docID", docID).
-		Str("index", indexName).
+		Str("index", searchIndex.Status.IndexName).
 		Msg("deleted document from index")
 
 	return ctrl.Result{}, nil
