@@ -97,11 +97,12 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID, resource.GroupVersionKind().Kind)
+	m, err := s.mgr.GetLocalManager().GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
+	indexName := m.Resource.Resource
 	if indexName == "" {
 		log.Debug().Str("orgID", orgID).Msg("search index not ready yet, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
