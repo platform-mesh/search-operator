@@ -228,6 +228,23 @@ func (c *Client) UpdateIndexReplicas(ctx context.Context, indexName string, numb
 	return nil
 }
 
+// UpdateIndexMapping applies the provided mapping to an existing index.
+func (c *Client) UpdateIndexMapping(ctx context.Context, indexName, mapping string) error {
+	if strings.TrimSpace(mapping) == "" {
+		return nil
+	}
+
+	_, err := c.api.Indices.Mapping.Put(ctx, opensearchapi.MappingPutReq{
+		Indices: []string{indexName},
+		Body:    strings.NewReader(mapping),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update mapping for index %s: %w", indexName, err)
+	}
+
+	return nil
+}
+
 // EnsureAliases ensures that all provided aliases exist for the given index.
 func (c *Client) EnsureAliases(ctx context.Context, indexName string, aliases []string) error {
 	log := logger.LoadLoggerFromContext(ctx)

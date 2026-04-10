@@ -1,6 +1,9 @@
 package opensearch
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -8,45 +11,277 @@ import (
 // - payload_raw is stored but not indexed (enabled=false).
 // - payload_text stores the full serialized object for full-text search.
 func DefaultIndexMapping() string {
-	return `{
-	  "dynamic": false,
-	  "properties": {
-	    "id": {"type": "keyword"},
-	    "name": {
-	      "type": "text",
-	      "fields": {
-	        "keyword": {"type": "keyword", "ignore_above": 256}
-	      }
-	    },
-	    "type": {"type": "keyword"},
-	    "kind": {"type": "keyword"},
-	    "namespace": {"type": "keyword"},
-	    "api_group": {"type": "keyword"},
-	    "api_version": {"type": "keyword"},
-	    "cluster_name": {"type": "keyword"},
-	    "path": {"type": "keyword"},
-	    "workspace_path": {"type": "keyword"},
-	    "organization_id": {"type": "keyword"},
-	    "organization_name": {"type": "keyword"},
-	    "account_id": {"type": "keyword"},
-	    "account_name": {"type": "keyword"},
-	    "fga_object": {"type": "keyword"},
-	    "labels": {"type": "flat_object"},
-	    "annotations": {"type": "flat_object"},
-	    "permissions": {
-	      "type": "nested",
-	      "properties": {
-	        "user": {"type": "keyword"},
-	        "relation": {"type": "keyword"},
-	        "object": {"type": "keyword"}
-	      }
-	    },
-	    "created_at": {"type": "date"},
-	    "updated_at": {"type": "date"},
-	    "payload_raw_json": {"type": "keyword", "index": false, "doc_values": false},
-	    "payload_text": {"type": "text"}
-	  }
-	}`
+	mapping, err := BuildSearchIndexMapping(nil, nil, nil)
+	if err != nil {
+		panic(fmt.Sprintf("build default index mapping: %v", err))
+	}
+
+	return mapping
+}
+
+// BuildSearchIndexMapping returns the OpenSearch mapping used for SearchIndex-backed
+// resource indices.
+//
+// All configured searchable fields are mapped as text fields with a keyword
+// subfield so the same source value supports both full-text queries and exact
+// match filtering/sorting. Semantic fields additionally get an explicitly
+// materialized sibling <field>_semantic text field.
+func BuildSearchIndexMapping(filterableFields, defaultFields, semanticFields []string) (string, error) {
+	properties := baseIndexProperties()
+
+	for _, fieldPath := range uniqueFieldPaths(defaultFields, filterableFields, semanticFields) {
+		if err := addFieldMapping(properties, fieldPath, searchableTextFieldMapping()); err != nil {
+			return "", err
+		}
+	}
+	for _, fieldPath := range uniqueFieldPaths(semanticFields) {
+		if err := addFieldMapping(properties, semanticShadowFieldPath(fieldPath), semanticFieldMapping()); err != nil {
+			return "", err
+		}
+	}
+
+	raw, err := json.Marshal(map[string]any{
+		"dynamic":    false,
+		"properties": properties,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal index mapping: %w", err)
+	}
+
+	return string(raw), nil
+}
+
+func uniqueFieldPaths(groups ...[]string) []string {
+	seen := map[string]struct{}{}
+	paths := make([]string, 0)
+	for _, group := range groups {
+		for _, fieldPath := range group {
+			normalized := strings.TrimSpace(fieldPath)
+			if normalized == "" {
+				continue
+			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			paths = append(paths, normalized)
+		}
+	}
+
+	return paths
+}
+
+func baseIndexProperties() map[string]any {
+	return map[string]any{
+		"id": map[string]any{
+			"type": "keyword",
+		},
+		"name": map[string]any{
+			"type": "text",
+			"fields": map[string]any{
+				"keyword": map[string]any{
+					"type":         "keyword",
+					"ignore_above": 256,
+				},
+			},
+		},
+		"type": map[string]any{
+			"type": "keyword",
+		},
+		"kind": map[string]any{
+			"type": "keyword",
+		},
+		"namespace": map[string]any{
+			"type": "keyword",
+		},
+		"api_group": map[string]any{
+			"type": "keyword",
+		},
+		"api_version": map[string]any{
+			"type": "keyword",
+		},
+		"cluster_name": map[string]any{
+			"type": "keyword",
+		},
+		"path": map[string]any{
+			"type": "keyword",
+		},
+		"workspace_path": map[string]any{
+			"type": "keyword",
+		},
+		"organization_id": map[string]any{
+			"type": "keyword",
+		},
+		"organization_name": map[string]any{
+			"type": "keyword",
+		},
+		"account_id": map[string]any{
+			"type": "keyword",
+		},
+		"account_name": map[string]any{
+			"type": "keyword",
+		},
+		"fga_object": map[string]any{
+			"type": "keyword",
+		},
+		"labels": map[string]any{
+			"type": "flat_object",
+		},
+		"annotations": map[string]any{
+			"type": "flat_object",
+		},
+		"permissions": map[string]any{
+			"type": "nested",
+			"properties": map[string]any{
+				"user": map[string]any{
+					"type": "keyword",
+				},
+				"relation": map[string]any{
+					"type": "keyword",
+				},
+				"object": map[string]any{
+					"type": "keyword",
+				},
+			},
+		},
+		"created_at": map[string]any{
+			"type": "date",
+		},
+		"updated_at": map[string]any{
+			"type": "date",
+		},
+		"payload_raw_json": map[string]any{
+			"type":       "keyword",
+			"index":      false,
+			"doc_values": false,
+		},
+		"payload_text": map[string]any{
+			"type": "text",
+		},
+		"spec": map[string]any{
+			"type":    "object",
+			"dynamic": true,
+		},
+		"status": map[string]any{
+			"type":    "object",
+			"dynamic": true,
+		},
+	}
+}
+
+func addFieldMapping(properties map[string]any, fieldPath string, mapping map[string]any) error {
+	parts := splitFieldPath(fieldPath)
+	if len(parts) == 0 {
+		return nil
+	}
+
+	current := properties
+	for i := 0; i < len(parts)-1; i++ {
+		part := parts[i]
+		existing, found := current[part]
+		if !found {
+			next := objectFieldMapping()
+			current[part] = next
+			current = next["properties"].(map[string]any)
+			continue
+		}
+
+		existingMap, ok := existing.(map[string]any)
+		if !ok {
+			return fmt.Errorf("field path %q collides with non-object segment %q", fieldPath, part)
+		}
+
+		existingType, _ := existingMap["type"].(string)
+		if existingType != "" && existingType != "object" {
+			return fmt.Errorf("field path %q collides with non-object mapping at %q", fieldPath, part)
+		}
+
+		next, ok := existingMap["properties"].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			existingMap["type"] = "object"
+			existingMap["properties"] = next
+		}
+		current = next
+	}
+
+	last := parts[len(parts)-1]
+	if existing, found := current[last]; found {
+		existingMap, ok := existing.(map[string]any)
+		if !ok {
+			return fmt.Errorf("field path %q collides with invalid mapping at %q", fieldPath, last)
+		}
+
+		existingType, _ := existingMap["type"].(string)
+		if existingType == "object" {
+			return fmt.Errorf("field path %q collides with existing object mapping at %q", fieldPath, last)
+		}
+	}
+
+	current[last] = cloneMapping(mapping)
+	return nil
+}
+
+func splitFieldPath(fieldPath string) []string {
+	rawParts := strings.Split(strings.TrimSpace(fieldPath), ".")
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+
+	return parts
+}
+
+func objectFieldMapping() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+}
+
+func searchableTextFieldMapping() map[string]any {
+	return map[string]any{
+		"type": "text",
+		"fields": map[string]any{
+			"keyword": map[string]any{
+				"type":         "keyword",
+				"ignore_above": 256,
+			},
+		},
+	}
+}
+
+func semanticFieldMapping() map[string]any {
+	return map[string]any{
+		"type": "text",
+	}
+}
+
+func cloneMapping(source map[string]any) map[string]any {
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		if nested, ok := value.(map[string]any); ok {
+			cloned[key] = cloneMapping(nested)
+			continue
+		}
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
+func semanticShadowFieldPath(fieldPath string) string {
+	parts := splitFieldPath(fieldPath)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	parts[len(parts)-1] = parts[len(parts)-1] + "_semantic"
+	return strings.Join(parts, ".")
 }
 
 // WorkspaceDocument represents an indexed workspace/account in OpenSearch

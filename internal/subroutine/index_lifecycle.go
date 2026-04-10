@@ -90,6 +90,14 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 
 	numReplicas := max(searchIndex.Spec.NumberOfReplicas, 0)
 	desiredIndexName := buildCanonicalIndexName(s.staticIndexPrefix, specPrefix, organizationClusterID)
+	indexMapping, err := opensearch.BuildSearchIndexMapping(
+		searchIndex.Spec.FilterableFields,
+		searchIndex.Spec.DefaultFields,
+		searchIndex.Spec.SemanticFields,
+	)
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("build index mapping for %q: %w", searchIndex.GetName(), err), false, false)
+	}
 
 	log.Info().
 		Str("name", searchIndex.GetName()).
@@ -108,43 +116,29 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("OpenSearch client not configured"), true, false)
 	}
 
-	legacyIndexName := organizationClusterID
-	useIndexName := desiredIndexName
-
-	desiredExists, err := s.osClient.IndexExists(ctx, desiredIndexName)
+	exists, err := s.osClient.IndexExists(ctx, desiredIndexName)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to check index existence for %q: %w", desiredIndexName, err), true, true)
-	}
-	legacyExists := false
-	if !desiredExists {
-		legacyExists, err = s.osClient.IndexExists(ctx, legacyIndexName)
-		if err != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to check legacy index existence for %q: %w", legacyIndexName, err), true, true)
-		}
-		if legacyExists {
-			useIndexName = legacyIndexName
-		}
 	}
 
 	created := false
 	replicasUpdated := false
-	if !desiredExists && !legacyExists {
-		if err := s.osClient.CreateIndex(ctx, desiredIndexName, numberShards, numReplicas, opensearch.DefaultIndexMapping()); err != nil {
+	if !exists {
+		if err := s.osClient.CreateIndex(ctx, desiredIndexName, numberShards, numReplicas, indexMapping); err != nil {
 			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to create index %q: %w", desiredIndexName, err), true, true)
 		}
 		created = true
-		useIndexName = desiredIndexName
 	} else {
-		currentSettings, settingsErr := s.osClient.GetIndexSettings(ctx, useIndexName)
+		currentSettings, settingsErr := s.osClient.GetIndexSettings(ctx, desiredIndexName)
 		if settingsErr != nil {
-			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read index settings for %q: %w", useIndexName, settingsErr), true, true)
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to read index settings for %q: %w", desiredIndexName, settingsErr), true, true)
 		}
 
 		if currentSettings.NumberOfShards != numberShards {
 			return ctrl.Result{}, errors.NewOperatorError(
 				fmt.Errorf(
 					"cannot change number_of_shards for existing index %q (current=%d desired=%d); create a new index and reindex data",
-					useIndexName,
+					desiredIndexName,
 					currentSettings.NumberOfShards,
 					numberShards,
 				),
@@ -154,9 +148,9 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		}
 
 		if currentSettings.NumberOfReplicas != numReplicas {
-			if err := s.osClient.UpdateIndexReplicas(ctx, useIndexName, numReplicas); err != nil {
+			if err := s.osClient.UpdateIndexReplicas(ctx, desiredIndexName, numReplicas); err != nil {
 				return ctrl.Result{}, errors.NewOperatorError(
-					fmt.Errorf("failed to update number_of_replicas for index %q to %d: %w", useIndexName, numReplicas, err),
+					fmt.Errorf("failed to update number_of_replicas for index %q to %d: %w", desiredIndexName, numReplicas, err),
 					true,
 					true,
 				)
@@ -164,7 +158,7 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 
 			log.Info().
 				Str("name", searchIndex.GetName()).
-				Str("indexName", useIndexName).
+				Str("indexName", desiredIndexName).
 				Int32("previousNumberOfReplicas", currentSettings.NumberOfReplicas).
 				Int32("numberOfReplicas", numReplicas).
 				Msg("updated existing index replicas")
@@ -172,14 +166,22 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		}
 	}
 
+	if err := s.osClient.UpdateIndexMapping(ctx, desiredIndexName, indexMapping); err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(
+			fmt.Errorf("failed to update mapping for index %q: %w", desiredIndexName, err),
+			true,
+			true,
+		)
+	}
+
 	aliases := buildIndexAliases(s.staticIndexPrefix, specPrefix, organizationClusterID, desiredIndexName)
-	if err := s.osClient.EnsureAliases(ctx, useIndexName, aliases); err != nil {
-		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to ensure aliases for index %q: %w", useIndexName, err), true, true)
+	if err := s.osClient.EnsureAliases(ctx, desiredIndexName, aliases); err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to ensure aliases for index %q: %w", desiredIndexName, err), true, true)
 	}
 
 	statusChanged := false
-	if searchIndex.Status.IndexName != useIndexName {
-		searchIndex.Status.IndexName = useIndexName
+	if searchIndex.Status.IndexName != desiredIndexName {
+		searchIndex.Status.IndexName = desiredIndexName
 		statusChanged = true
 	}
 
@@ -188,10 +190,9 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 		log.Info().
 			Str("name", searchIndex.GetName()).
 			Str("organizationClusterID", organizationClusterID).
-			Str("indexName", useIndexName).
+			Str("indexName", desiredIndexName).
 			Str("desiredIndexName", desiredIndexName).
 			Bool("created", created).
-			Bool("legacyIndexInUse", useIndexName == legacyIndexName && useIndexName != desiredIndexName).
 			Bool("replicasUpdated", replicasUpdated).
 			Bool("statusChanged", statusChanged).
 			Int32("numberOfShards", numberShards).
@@ -277,26 +278,6 @@ func (s *IndexLifecycleSubroutine) ensureSearchIndexMetadata(ctx context.Context
 	return nil
 }
 
-func buildCanonicalIndexName(staticPrefix, specPrefix, organizationClusterID string) string {
-	parts := make([]string, 0, 3)
-
-	if p := sanitizeIndexNamePart(staticPrefix); p != "" {
-		parts = append(parts, p)
-	}
-	if p := sanitizeIndexNamePart(specPrefix); p != "" {
-		parts = append(parts, p)
-	}
-	if p := sanitizeIndexNamePart(organizationClusterID); p != "" {
-		parts = append(parts, p)
-	}
-
-	indexName := strings.Join(parts, "-")
-	if len(indexName) > 255 {
-		indexName = indexName[:255]
-	}
-	return strings.Trim(indexName, "-")
-}
-
 func buildIndexAliases(staticPrefix, specPrefix, organizationClusterID, canonicalIndexName string) []string {
 	static := sanitizeIndexNamePart(staticPrefix)
 	spec := sanitizeIndexNamePart(specPrefix)
@@ -322,30 +303,4 @@ func normalizePrefix(value string) string {
 		return sanitized
 	}
 	return "pm"
-}
-
-func sanitizeIndexNamePart(value string) string {
-	value = strings.ToLower(value)
-
-	var b strings.Builder
-	b.Grow(len(value))
-	lastWasDash := false
-
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-			lastWasDash = false
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-			lastWasDash = false
-		default:
-			if !lastWasDash {
-				b.WriteByte('-')
-				lastWasDash = true
-			}
-		}
-	}
-
-	return strings.Trim(b.String(), "-")
 }
