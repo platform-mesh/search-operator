@@ -47,7 +47,7 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 	}
 
 	// Build subroutines list
-	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName, localMgr.GetConfig())
+	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName, cfg.OpenSearch.IndexNamePrefix, localMgr.GetConfig())
 	if err != nil {
 		return nil, fmt.Errorf("create IndexableResourceWatcherSubroutine: %w", err)
 	}

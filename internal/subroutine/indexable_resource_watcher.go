@@ -39,12 +39,13 @@ type IndexableResourceWatcherSubroutine struct {
 	orgsClient    client.Client // scoped to root:orgs for Workspace lookups
 	osClient      *opensearch.Client
 	apiExportName string
+	indexPrefix   string
 	rootCfg       *rest.Config // base KCP REST config (path stripped) for workspace-scoped clients
 }
 
 // NewIndexableResourceWatcherSubroutine creates a new IndexableResource watcher subroutine.
 // localCfg must be the admin KCP REST config
-func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
+func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, indexPrefix string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
 	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
 		return nil, err
@@ -56,6 +57,7 @@ func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient clie
 		orgsClient:    orgsClient,
 		osClient:      osClient,
 		apiExportName: apiExportName,
+		indexPrefix:   indexPrefix,
 		rootCfg:       rootCfg,
 	}, nil
 }
@@ -99,14 +101,21 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 
 	m, err := s.mgr.GetLocalManager().GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
 	if err != nil {
+		log.Debug().Err(err).Msg("could not resolve plural resource via RESTMapper, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	pluralResource := m.Resource.Resource
+
+	searchIndex, err := getSearchIndex(ctx, s.orgsClient, orgID, pluralResource, s.indexPrefix)
+	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	indexName := m.Resource.Resource
-	if indexName == "" {
-		log.Debug().Str("orgID", orgID).Msg("search index not ready yet, requeuing")
+	if searchIndex.Status.IndexName == "" {
+		log.Debug().Str("orgID", orgID).Msg("SearchIndex has no IndexName yet, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
+	indexName := searchIndex.Status.IndexName
 
 	resourceClusterID := resolveResourceClusterID(resource, clusterID)
 	docID := s.generateDocumentID(resource, resourceClusterID)
@@ -124,8 +133,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.APIVersion = gvk.Version
 	doc.OrganizationName = orgName
 	doc.OrganizationID = orgID
-	doc.Labels = resource.GetLabels()
-	doc.Annotations = resource.GetAnnotations()
+	doc.CustomFields = extractCustomFields(resource, searchIndex.Spec.DefaultFields)
 
 	accountInfo, err := s.getAccountInfo(ctx, workspacePath, gvk, resource)
 	if err != nil {
@@ -262,15 +270,31 @@ func (s *IndexableResourceWatcherSubroutine) getAccountInfo(ctx context.Context,
 	return nil, nil
 }
 
-func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID string, resourceName string) (string, error) {
-	searchIndex := v1alpha1.SearchIndex{}
-	name := fmt.Sprintf("pm-orgs-%s-%s", orgID, sanitizeIndexNamePart(resourceName))
-	err := orgsClient.Get(ctx, types.NamespacedName{Name: name}, &searchIndex)
-	if err != nil {
-		return "", fmt.Errorf("failed to get cluster %q: %w", orgID, err)
+func getSearchIndex(ctx context.Context, orgsClient client.Client, orgID string, pluralResource string, indexPrefix string) (*v1alpha1.SearchIndex, error) {
+	searchIndex := &v1alpha1.SearchIndex{}
+	name := buildCanonicalIndexName(indexPrefix, orgID, pluralResource)
+	if err := orgsClient.Get(ctx, types.NamespacedName{Name: name}, searchIndex); err != nil {
+		return nil, fmt.Errorf("failed to get SearchIndex %q: %w", name, err)
 	}
+	return searchIndex, nil
+}
 
-	return searchIndex.Status.IndexName, nil
+// extractCustomFields copies only the top-level fields listed in defaultFields
+// from the unstructured resource object. Fields not present in the resource are skipped.
+func extractCustomFields(resource *unstructured.Unstructured, defaultFields []string) map[string]any {
+	if len(defaultFields) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(defaultFields))
+	for _, field := range defaultFields {
+		if v, ok := resource.Object[field]; ok {
+			out[field] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
@@ -412,15 +436,23 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID, resource.GroupVersionKind().Group)
+	m, err := s.mgr.GetLocalManager().GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
+	if err != nil {
+		log.Debug().Err(err).Msg("could not resolve plural resource via RESTMapper, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	pluralResource := m.Resource.Resource
+
+	searchIndex, err := getSearchIndex(ctx, s.orgsClient, orgID, pluralResource, s.indexPrefix)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if indexName == "" {
+	if searchIndex.Status.IndexName == "" {
 		log.Warn().Str("orgID", orgID).Msg("SearchIndex has no IndexName, cannot delete document")
 		return ctrl.Result{}, nil
 	}
+	indexName := searchIndex.Status.IndexName
 
 	resourceClusterID := resolveResourceClusterID(resource, clusterID)
 	docID := s.generateDocumentID(resource, resourceClusterID)
