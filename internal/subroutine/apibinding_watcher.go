@@ -119,11 +119,14 @@ func (s *apiBindingWatcherSubroutine) resolveDefaultFields(ctx context.Context, 
 		return nil, nil
 	}
 
-	exportCluster, err := s.mgr.GetCluster(ctx, binding.Status.APIExportClusterName)
+	// The export cluster is the provider workspace that owns the APIExport.
+	// It is not a consumer of the export, so it does not appear in the multicluster
+	// manager's cluster list. Build a direct client using the cluster ID via the
+	// clusters API instead of going through GetCluster.
+	exportClient, err := buildClusterIDScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), binding.Status.APIExportClusterName)
 	if err != nil {
-		return nil, fmt.Errorf("get export cluster %q: %w", binding.Status.APIExportClusterName, err)
+		return nil, fmt.Errorf("get export cluster client %q: %w", binding.Status.APIExportClusterName, err)
 	}
-	exportClient := exportCluster.GetClient()
 
 	seen := make(map[string]struct{})
 	for _, br := range binding.Status.BoundResources {

@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1alpha1 contains API Schema definitions for the core v1alpha1 API group.
+// Package v1alpha1 contains API Schema definitions for the search.platform-mesh.io v1alpha1 API group.
 // +kubebuilder:object:generate=true
-// +groupName=core.platform-mesh.io
+// +groupName=search.platform-mesh.io
 package v1alpha1
 
 import (
@@ -26,7 +26,7 @@ import (
 
 const (
 	// GroupName is the group name used in this package.
-	GroupName = "core.platform-mesh.io"
+	GroupName = "search.platform-mesh.io"
 
 	// AccountKind is the Kind name for Account resources.
 	AccountKind = "Account"
