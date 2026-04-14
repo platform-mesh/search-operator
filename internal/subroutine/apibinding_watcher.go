@@ -96,7 +96,7 @@ func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runt
 		return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("resolve default fields for binding %q: %w", binding.Name, err), true, false)
 	}
 
-	for _, br := range binding.Status.BoundResources {
+	for _, br := range binding.Status.AppliedPermissionClaims {
 		if err := s.ensureSearchIndex(ctx, log, orgName, orgClusterID, br.Resource, defaultFields); err != nil {
 			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("ensure SearchIndex for binding %q resource %q: %w", binding.Name, br.Resource, err), true, false)
 		}

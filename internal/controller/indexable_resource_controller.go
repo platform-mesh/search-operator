@@ -41,7 +41,7 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 	}
 
 	// Create a client scoped to root:orgs for Workspace lookups
-	orgsClient, err := GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
+	orgsClient, err := subroutine.GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
 	if err != nil {
 		return nil, err
 	}

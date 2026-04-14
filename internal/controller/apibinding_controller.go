@@ -34,7 +34,7 @@ type APIBindingReconciler struct {
 func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, indexPrefix string) (*APIBindingReconciler, error) {
 	localMgr := mcMgr.GetLocalManager()
 
-	orgsClient, err := GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
+	orgsClient, err := subroutine.GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
 	if err != nil {
 		return nil, fmt.Errorf("create root:orgs scoped client: %w", err)
 	}
@@ -66,27 +66,6 @@ func (r *APIBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 // SetupWithManager sets up the controller with the multicluster Manager.
 func (r *APIBindingReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, evp ...predicate.Predicate) error {
 	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "apibinding", &kcpv1alpha1.APIBinding{}, "", r, r.log, evp...)
-}
-
-// GetScopedClient creates a client scoped to a specific logical cluster path (e.g. "root:orgs")
-func GetScopedClient(cfg *rest.Config, scheme *runtime.Scheme, clusterPath string) (client.Client, error) {
-	scopedCfg := rest.CopyConfig(cfg)
-	parsed, err := url.Parse(scopedCfg.Host)
-	if err != nil {
-		return nil, err
-	}
-	requestPath := logicalcluster.NewPath(clusterPath).RequestPath()
-	parts := strings.Split(parsed.Path, "clusters")
-	if len(parts) > 0 {
-		parsed.Path, err = url.JoinPath(parts[0], requestPath)
-	} else {
-		parsed.Path, err = url.JoinPath("/", requestPath)
-	}
-	if err != nil {
-		return nil, err
-	}
-	scopedCfg.Host = parsed.String()
-	return client.New(scopedCfg, client.Options{Scheme: scheme})
 }
 
 // GetAllClient creates a client that can query across all workspaces using the wildcard cluster

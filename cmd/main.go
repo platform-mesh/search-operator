@@ -74,7 +74,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&kcpKubeconfig, "kcp-kubeconfig", "/etc/kcp/kubeconfig",
 		"Path to the KCP kubeconfig file.")
-	flag.StringVar(&apiExportEndpointSliceName, "api-export-endpoint-slice-name", "core.platform-mesh.io",
+	flag.StringVar(&apiExportEndpointSliceName, "api-export-endpoint-slice-name", "search-dxp.sap.com",
 		"Name of the APIExportEndpointSlice to use for the multicluster provider.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")

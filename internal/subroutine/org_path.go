@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kcp-dev/logicalcluster/v3"
 	kcpcore "github.com/kcp-dev/sdk/apis/core"
 	kcpcorev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
 	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
@@ -135,4 +136,25 @@ func buildCanonicalIndexName(prefix, organizationClusterID, resource string) str
 		indexName = indexName[:255]
 	}
 	return strings.Trim(indexName, "-")
+}
+
+// GetScopedClient creates a client scoped to a specific logical cluster path (e.g. "root:orgs")
+func GetScopedClient(cfg *rest.Config, scheme *runtime.Scheme, clusterPath string) (client.Client, error) {
+	scopedCfg := rest.CopyConfig(cfg)
+	parsed, err := url.Parse(scopedCfg.Host)
+	if err != nil {
+		return nil, err
+	}
+	requestPath := logicalcluster.NewPath(clusterPath).RequestPath()
+	parts := strings.Split(parsed.Path, "clusters")
+	if len(parts) > 0 {
+		parsed.Path, err = url.JoinPath(parts[0], requestPath)
+	} else {
+		parsed.Path, err = url.JoinPath("/", requestPath)
+	}
+	if err != nil {
+		return nil, err
+	}
+	scopedCfg.Host = parsed.String()
+	return client.New(scopedCfg, client.Options{Scheme: scheme})
 }
