@@ -99,7 +99,12 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	m, err := s.mgr.GetLocalManager().GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
+	consumerCluster, err := s.mgr.GetCluster(ctx, clusterID)
+	if err != nil {
+		log.Debug().Err(err).Msg("could not get consumer cluster, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	m, err := consumerCluster.GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
 	if err != nil {
 		log.Debug().Err(err).Msg("could not resolve plural resource via RESTMapper, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -436,7 +441,12 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	m, err := s.mgr.GetLocalManager().GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
+	consumerCluster, err := s.mgr.GetCluster(ctx, clusterID)
+	if err != nil {
+		log.Debug().Err(err).Msg("could not get consumer cluster, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	m, err := consumerCluster.GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
 	if err != nil {
 		log.Debug().Err(err).Msg("could not resolve plural resource via RESTMapper, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
