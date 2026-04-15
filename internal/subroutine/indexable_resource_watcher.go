@@ -139,6 +139,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.OrganizationName = orgName
 	doc.OrganizationID = orgID
 	doc.CustomFields = extractCustomFields(resource, searchIndex.Spec.DefaultFields)
+	semanticFieldValues := extractConfiguredFields(resource, searchIndex.Spec.SemanticFields)
 
 	accountInfo, err := s.getAccountInfo(ctx, workspacePath, gvk, resource)
 	if err != nil {
@@ -199,7 +200,14 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.PayloadRawJSON = payloadRawJSON
 	doc.PayloadText = payloadText
 
-	if err := s.osClient.IndexDocument(ctx, indexName, docID, doc); err != nil {
+	documentBody, err := buildDocumentSource(doc, semanticFieldValues)
+	if err != nil {
+		return ctrl.Result{}, errors.NewOperatorError(
+			fmt.Errorf("failed to build document source for %s: %w", docID, err), true, false,
+		)
+	}
+
+	if err := s.osClient.IndexDocument(ctx, indexName, docID, documentBody); err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(
 			fmt.Errorf("failed to index document %s: %w", docID, err), true, false,
 		)
@@ -300,6 +308,113 @@ func extractCustomFields(resource *unstructured.Unstructured, defaultFields []st
 		return nil
 	}
 	return out
+}
+
+// extractConfiguredFields resolves field paths from the unstructured resource object.
+// Dotted paths are traversed as nested maps.
+func extractConfiguredFields(resource *unstructured.Unstructured, fieldPaths []string) map[string]any {
+	if len(fieldPaths) == 0 {
+		return nil
+	}
+
+	out := make(map[string]any, len(fieldPaths))
+	for _, fieldPath := range fieldPaths {
+		if value, ok := lookupFieldPath(resource.Object, fieldPath); ok {
+			out[fieldPath] = value
+		}
+	}
+
+	if len(out) == 0 {
+		return nil
+	}
+
+	return out
+}
+
+func lookupFieldPath(obj map[string]any, fieldPath string) (any, bool) {
+	segments := opensearchSplitFieldPath(fieldPath)
+	if len(segments) == 0 {
+		return nil, false
+	}
+
+	var current any = obj
+	for _, segment := range segments {
+		currentMap, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = currentMap[segment]
+		if !ok {
+			return nil, false
+		}
+	}
+
+	return current, true
+}
+
+func buildDocumentSource(doc *opensearch.ResourceDocument, configuredFields map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("marshal resource document: %w", err)
+	}
+
+	var source map[string]any
+	if err := json.Unmarshal(raw, &source); err != nil {
+		return nil, fmt.Errorf("unmarshal resource document: %w", err)
+	}
+
+	for fieldPath, value := range configuredFields {
+		if err := setFieldPath(source, fieldPath, value); err != nil {
+			return nil, err
+		}
+	}
+
+	return source, nil
+}
+
+func setFieldPath(target map[string]any, fieldPath string, value any) error {
+	segments := opensearchSplitFieldPath(fieldPath)
+	if len(segments) == 0 {
+		return nil
+	}
+
+	current := target
+	for i, segment := range segments {
+		isLeaf := i == len(segments)-1
+		if isLeaf {
+			current[segment] = value
+			return nil
+		}
+
+		next, exists := current[segment]
+		if !exists || next == nil {
+			nextMap := map[string]any{}
+			current[segment] = nextMap
+			current = nextMap
+			continue
+		}
+
+		nextMap, ok := next.(map[string]any)
+		if !ok {
+			return fmt.Errorf("field path %q conflicts with non-object segment %q", fieldPath, segment)
+		}
+		current = nextMap
+	}
+
+	return nil
+}
+
+func opensearchSplitFieldPath(fieldPath string) []string {
+	rawSegments := strings.Split(strings.TrimSpace(fieldPath), ".")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
+		segments = append(segments, segment)
+	}
+	return segments
 }
 
 func (s *IndexableResourceWatcherSubroutine) generateDocumentID(

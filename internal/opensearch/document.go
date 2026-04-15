@@ -1,52 +1,146 @@
 package opensearch
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
 // DefaultIndexMapping returns the default OpenSearch index mapping for workspace and resource documents.
 // - payload_raw is stored but not indexed (enabled=false).
 // - payload_text stores the full serialized object for full-text search.
-func DefaultIndexMapping() string {
-	return `{
-	  "dynamic": false,
-	  "properties": {
-	    "id": {"type": "keyword"},
-	    "name": {
-	      "type": "text",
-	      "fields": {
-	        "keyword": {"type": "keyword", "ignore_above": 256}
-	      }
-	    },
-	    "type": {"type": "keyword"},
-	    "kind": {"type": "keyword"},
-	    "namespace": {"type": "keyword"},
-	    "api_group": {"type": "keyword"},
-	    "api_version": {"type": "keyword"},
-	    "cluster_name": {"type": "keyword"},
-	    "path": {"type": "keyword"},
-	    "workspace_path": {"type": "keyword"},
-	    "organization_id": {"type": "keyword"},
-	    "organization_name": {"type": "keyword"},
-	    "account_id": {"type": "keyword"},
-	    "account_name": {"type": "keyword"},
-	    "fga_object": {"type": "keyword"},
-	    "labels": {"type": "flat_object"},
-	    "annotations": {"type": "flat_object"},
-	    "permissions": {
-	      "type": "nested",
-	      "properties": {
-	        "user": {"type": "keyword"},
-	        "relation": {"type": "keyword"},
-	        "object": {"type": "keyword"}
-	      }
-	    },
-	    "created_at": {"type": "date"},
-	    "updated_at": {"type": "date"},
-	    "payload_raw_json": {"type": "keyword", "index": false, "doc_values": false},
-	    "payload_text": {"type": "text"}
-	  }
-	}`
+func DefaultIndexMapping(semanticFields []string, semanticModelID string) (string, error) {
+	properties := map[string]any{
+		"id": map[string]any{"type": "keyword"},
+		"name": map[string]any{
+			"type": "text",
+			"fields": map[string]any{
+				"keyword": map[string]any{"type": "keyword", "ignore_above": 256},
+			},
+		},
+		"type":              map[string]any{"type": "keyword"},
+		"kind":              map[string]any{"type": "keyword"},
+		"namespace":         map[string]any{"type": "keyword"},
+		"api_group":         map[string]any{"type": "keyword"},
+		"api_version":       map[string]any{"type": "keyword"},
+		"cluster_name":      map[string]any{"type": "keyword"},
+		"path":              map[string]any{"type": "keyword"},
+		"workspace_path":    map[string]any{"type": "keyword"},
+		"organization_id":   map[string]any{"type": "keyword"},
+		"organization_name": map[string]any{"type": "keyword"},
+		"account_id":        map[string]any{"type": "keyword"},
+		"account_name":      map[string]any{"type": "keyword"},
+		"fga_object":        map[string]any{"type": "keyword"},
+		"labels":            map[string]any{"type": "flat_object"},
+		"annotations":       map[string]any{"type": "flat_object"},
+		"permissions": map[string]any{
+			"type": "nested",
+			"properties": map[string]any{
+				"user":     map[string]any{"type": "keyword"},
+				"relation": map[string]any{"type": "keyword"},
+				"object":   map[string]any{"type": "keyword"},
+			},
+		},
+		"created_at":       map[string]any{"type": "date"},
+		"updated_at":       map[string]any{"type": "date"},
+		"payload_raw_json": map[string]any{"type": "keyword", "index": false, "doc_values": false},
+		"payload_text":     map[string]any{"type": "text"},
+	}
+
+	if len(semanticFields) > 0 {
+		semanticModelID = strings.TrimSpace(semanticModelID)
+		if semanticModelID == "" {
+			return "", fmt.Errorf("semantic model id is required when semantic fields are configured")
+		}
+		for _, fieldPath := range semanticFields {
+			if err := addSemanticFieldMapping(properties, fieldPath, semanticModelID); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	mapping := map[string]any{
+		"dynamic":    false,
+		"properties": properties,
+	}
+
+	raw, err := json.Marshal(mapping)
+	if err != nil {
+		return "", fmt.Errorf("marshal index mapping: %w", err)
+	}
+
+	return string(raw), nil
+}
+
+func addSemanticFieldMapping(properties map[string]any, fieldPath, semanticModelID string) error {
+	segments := splitFieldPath(fieldPath)
+	if len(segments) == 0 {
+		return nil
+	}
+
+	current := properties
+	for i, segment := range segments {
+		existing, exists := current[segment]
+		isLeaf := i == len(segments)-1
+
+		if isLeaf {
+			if exists {
+				existingMap, ok := existing.(map[string]any)
+				if !ok {
+					return fmt.Errorf("semantic field %q conflicts with existing non-object mapping", fieldPath)
+				}
+				if existingType, _ := existingMap["type"].(string); existingType != "" && existingType != "semantic" {
+					return fmt.Errorf("semantic field %q conflicts with existing %q mapping", fieldPath, existingType)
+				}
+			}
+			current[segment] = map[string]any{
+				"type":     "semantic",
+				"model_id": semanticModelID,
+			}
+			return nil
+		}
+
+		if !exists {
+			next := map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			}
+			current[segment] = next
+			current = next["properties"].(map[string]any)
+			continue
+		}
+
+		existingMap, ok := existing.(map[string]any)
+		if !ok {
+			return fmt.Errorf("semantic field %q conflicts with existing non-object mapping at %q", fieldPath, segment)
+		}
+		if existingType, _ := existingMap["type"].(string); existingType != "" && existingType != "object" {
+			return fmt.Errorf("semantic field %q conflicts with existing %q mapping at %q", fieldPath, existingType, segment)
+		}
+
+		nextProps, ok := existingMap["properties"].(map[string]any)
+		if !ok {
+			nextProps = map[string]any{}
+			existingMap["properties"] = nextProps
+		}
+		current = nextProps
+	}
+
+	return nil
+}
+
+func splitFieldPath(fieldPath string) []string {
+	rawSegments := strings.Split(strings.TrimSpace(fieldPath), ".")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		segment = strings.TrimSpace(segment)
+		if segment == "" {
+			continue
+		}
+		segments = append(segments, segment)
+	}
+	return segments
 }
 
 // WorkspaceDocument represents an indexed workspace/account in OpenSearch

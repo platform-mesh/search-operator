@@ -26,14 +26,21 @@ type IndexLifecycleSubroutine struct {
 	mgr               mcmanager.Manager
 	osClient          *opensearch.Client
 	staticIndexPrefix string
+	semanticModelID   string
 }
 
 // NewIndexLifecycleSubroutine creates a new index lifecycle subroutine
-func NewIndexLifecycleSubroutine(mgr mcmanager.Manager, osClient *opensearch.Client, staticIndexPrefix string) *IndexLifecycleSubroutine {
+func NewIndexLifecycleSubroutine(
+	mgr mcmanager.Manager,
+	osClient *opensearch.Client,
+	staticIndexPrefix string,
+	semanticModelID string,
+) *IndexLifecycleSubroutine {
 	return &IndexLifecycleSubroutine{
 		mgr:               mgr,
 		osClient:          osClient,
 		staticIndexPrefix: normalizePrefix(staticIndexPrefix),
+		semanticModelID:   strings.TrimSpace(semanticModelID),
 	}
 }
 
@@ -125,7 +132,11 @@ func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtime
 	created := false
 	replicasUpdated := false
 	if !desiredExists && !legacyExists {
-		if err := s.osClient.CreateIndex(ctx, desiredIndexName, numberShards, numReplicas, opensearch.DefaultIndexMapping()); err != nil {
+		mapping, err := opensearch.DefaultIndexMapping(searchIndex.Spec.SemanticFields, s.semanticModelID)
+		if err != nil {
+			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to build index mapping for %q: %w", desiredIndexName, err), false, false)
+		}
+		if err := s.osClient.CreateIndex(ctx, desiredIndexName, numberShards, numReplicas, mapping); err != nil {
 			return ctrl.Result{}, errors.NewOperatorError(fmt.Errorf("failed to create index %q: %w", desiredIndexName, err), true, true)
 		}
 		created = true

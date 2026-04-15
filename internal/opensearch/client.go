@@ -120,9 +120,10 @@ func (c *Client) CreateIndex(ctx context.Context, indexName string, numberOfShar
 
 	createBody := map[string]interface{}{
 		"settings": map[string]interface{}{
-			"index": map[string]int32{
+			"index": map[string]interface{}{
 				"number_of_shards":   numberOfShards,
 				"number_of_replicas": numberOfReplicas,
+				"knn":                true,
 			},
 		},
 	}
