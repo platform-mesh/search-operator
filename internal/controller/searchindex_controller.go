@@ -25,11 +25,17 @@ type SearchIndexReconciler struct {
 }
 
 // NewSearchIndexReconciler creates a new SearchIndex reconciler
-func NewSearchIndexReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClient *opensearch.Client, staticIndexPrefix string) *SearchIndexReconciler {
+func NewSearchIndexReconciler(
+	log *logger.Logger,
+	mcMgr mcmanager.Manager,
+	osClient *opensearch.Client,
+	staticIndexPrefix string,
+	semanticModelID string,
+) *SearchIndexReconciler {
 	return &SearchIndexReconciler{
 		log: log,
 		mclifecycle: builder.NewBuilder("searchindex", "SearchIndexReconciler", []lifecyclesubroutine.Subroutine{
-			subroutine.NewIndexLifecycleSubroutine(mcMgr, osClient, staticIndexPrefix),
+			subroutine.NewIndexLifecycleSubroutine(mcMgr, osClient, staticIndexPrefix, semanticModelID),
 		}, log).BuildMultiCluster(mcMgr),
 	}
 }
