@@ -1,8 +1,6 @@
 package config
 
 import (
-	"os"
-
 	"github.com/vrischmann/envconfig"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -28,7 +26,7 @@ type Config struct {
 		// IndexNamePrefix is a static prefix for all operator-managed index names and aliases.
 		IndexNamePrefix string `mapstructure:"opensearch-index-name-prefix" envconfig:"default=pm-orgs"`
 		// SemanticModelID is the OpenSearch ML model ID used for semantic field mappings.
-		SemanticModelID string `mapstructure:"opensearch-semantic-model-id"`
+		SemanticModelID string `mapstructure:"opensearch-semantic-model-id" envconfig:"optional,OPENSEARCH_SEMANTIC_MODEL_ID"`
 	} `mapstructure:",squash"`
 }
 
@@ -40,8 +38,5 @@ func (c Config) InitializerName() string {
 func NewFromEnv() (*Config, error) {
 	appConfig := Config{}
 	err := envconfig.Init(&appConfig)
-	if semanticModelID := os.Getenv("OPENSEARCH_SEMANTIC_MODEL_ID"); semanticModelID != "" {
-		appConfig.OpenSearch.SemanticModelID = semanticModelID
-	}
 	return &appConfig, err
 }
