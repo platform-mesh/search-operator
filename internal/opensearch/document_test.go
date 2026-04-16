@@ -30,6 +30,8 @@ func TestDefaultIndexMappingIncludesSemanticFields(t *testing.T) {
 	properties := js["properties"].(map[string]any)
 
 	description := properties["description"].(map[string]any)
+
+	//nolint:goconst
 	if got := description["type"]; got != "semantic" {
 		t.Fatalf("description type = %v, want semantic", got)
 	}
@@ -40,6 +42,8 @@ func TestDefaultIndexMappingIncludesSemanticFields(t *testing.T) {
 	spec := properties["spec"].(map[string]any)
 	specProperties := spec["properties"].(map[string]any)
 	summary := specProperties["summary"].(map[string]any)
+
+	//nolint:goconst
 	if got := summary["type"]; got != "semantic" {
 		t.Fatalf("spec.summary type = %v, want semantic", got)
 	}
