@@ -31,9 +31,9 @@ rules:
   - list
   - watch
 - apiGroups:
-  - core.platform-mesh.io
+  - search.platform-mesh.io
   resources:
-  - searchindices
+  - searchindexes
   verbs:
   - create
   - delete
@@ -43,15 +43,15 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.platform-mesh.io
+  - search.platform-mesh.io
   resources:
-  - searchindices/finalizers
+  - searchindexes/finalizers
   verbs:
   - update
 - apiGroups:
-  - core.platform-mesh.io
+  - search.platform-mesh.io
   resources:
-  - searchindices/status
+  - searchindexes/status
   verbs:
   - get
   - patch

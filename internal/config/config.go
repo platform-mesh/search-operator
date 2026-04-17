@@ -25,6 +25,8 @@ type Config struct {
 		Password string `mapstructure:"opensearch-password" envconfig:"default=admin"`
 		// IndexNamePrefix is a static prefix for all operator-managed index names and aliases.
 		IndexNamePrefix string `mapstructure:"opensearch-index-name-prefix" envconfig:"default=pm-orgs"`
+		// SemanticModelID is the OpenSearch ML model ID used for semantic field mappings.
+		SemanticModelID string `mapstructure:"opensearch-semantic-model-id" envconfig:"optional,OPENSEARCH_SEMANTIC_MODEL_ID"`
 	} `mapstructure:",squash"`
 }
 

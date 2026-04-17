@@ -30,6 +30,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	accountv1alpha1 "github.com/platform-mesh/account-operator/api/v1alpha1"
+
 	corev1alpha1 "github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/config"
 	"github.com/platform-mesh/search-operator/internal/controller"
@@ -162,8 +163,9 @@ func main() {
 	setupLog.Info("OpenSearch client connected successfully")
 
 	// Setup SearchIndex controller using lifecycle manager pattern
-	if err := controller.NewSearchIndexReconciler(log, mgr, osClient, cfg.OpenSearch.IndexNamePrefix).
-		SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+	if err := controller.NewSearchIndexReconciler(
+		log, mgr, osClient, cfg.OpenSearch.IndexNamePrefix, cfg.OpenSearch.SemanticModelID,
+	).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SearchIndex")
 		os.Exit(1)
 	}

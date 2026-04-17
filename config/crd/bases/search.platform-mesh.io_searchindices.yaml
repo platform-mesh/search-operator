@@ -4,13 +4,13 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: searchindices.core.platform-mesh.io
+  name: searchindexes.search.platform-mesh.io
 spec:
-  group: core.platform-mesh.io
+  group: search.platform-mesh.io
   names:
     kind: SearchIndex
     listKind: SearchIndexList
-    plural: searchindices
+    plural: searchindexes
     singular: searchindex
   scope: Cluster
   versions:
@@ -49,6 +49,19 @@ spec:
           spec:
             description: Spec defines the desired state of SearchIndex
             properties:
+              defaultFields:
+                description: |-
+                  DefaultFields lists all field paths derived from the APIResourceSchemas of
+                  bound APIExports. Every field present in a custom resource schema is reflected here.
+                items:
+                  type: string
+                type: array
+              filterableFields:
+                description: FilterableFields lists field paths to be used as exact-match
+                  filter facets.
+                items:
+                  type: string
+                type: array
               indexPrefix:
                 description: IndexPrefix is prepended to all index names for this
                   workspace
@@ -70,26 +83,11 @@ spec:
               paused:
                 description: Paused stops all indexing when true
                 type: boolean
-              trackedResources:
-                description: |-
-                  TrackedResources lists which resource types to index
-                  If empty, uses a default set of resources
+              semanticFields:
+                description: SemanticFields lists field paths to be used for semantic
+                  / vector search.
                 items:
-                  description: TrackedResource defines a resource type to index
-                  properties:
-                    group:
-                      description: Group is the API group (empty string for core)
-                      type: string
-                    kind:
-                      description: Kind is the resource kind
-                      type: string
-                    version:
-                      description: Version is the API version
-                      type: string
-                  required:
-                  - kind
-                  - version
-                  type: object
+                  type: string
                 type: array
             required:
             - indexPrefix
