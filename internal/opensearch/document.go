@@ -106,7 +106,7 @@ type ResourceDocument struct {
 	APIGroup   string `json:"api_group"`
 	APIVersion string `json:"api_version"`
 
-	// KCP context
+	// PM context
 	ClusterName      string `json:"cluster_name"`
 	WorkspacePath    string `json:"workspace_path"`
 	OrganizationID   string `json:"organization_id,omitempty"`
@@ -127,6 +127,10 @@ type ResourceDocument struct {
 	// Resource spec and status (arbitrary nested maps from the unstructured object)
 	Spec   map[string]interface{} `json:"spec,omitempty"`
 	Status map[string]interface{} `json:"status,omitempty"`
+
+	// CustomFields holds fields from the unstructured resource that are listed in
+	// the SearchIndex's DefaultFields. These are propagated directly from the resource.
+	CustomFields map[string]any `json:"custom_fields,omitempty"`
 
 	// Timestamps
 	CreatedAt time.Time `json:"created_at,omitempty"`

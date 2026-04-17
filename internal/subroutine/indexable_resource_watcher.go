@@ -4,16 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
 	"sigs.k8s.io/yaml"
 
-	kcpcore "github.com/kcp-dev/sdk/apis/core"
-	kcpcorev1alpha1 "github.com/kcp-dev/sdk/apis/core/v1alpha1"
-	kcptenancyv1alpha1 "github.com/kcp-dev/sdk/apis/tenancy/v1alpha1"
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/errors"
@@ -42,20 +39,17 @@ type IndexableResourceWatcherSubroutine struct {
 	orgsClient    client.Client // scoped to root:orgs for Workspace lookups
 	osClient      *opensearch.Client
 	apiExportName string
+	indexPrefix   string
 	rootCfg       *rest.Config // base KCP REST config (path stripped) for workspace-scoped clients
 }
 
 // NewIndexableResourceWatcherSubroutine creates a new IndexableResource watcher subroutine.
 // localCfg must be the admin KCP REST config
-func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
-	// Strip any existing path so we have a clean base URL for workspace routing.
-	rootCfg := rest.CopyConfig(localCfg)
-	parsed, err := url.Parse(rootCfg.Host)
+func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, indexPrefix string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
+	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
-		return nil, fmt.Errorf("parse KCP host URL: %w", err)
+		return nil, err
 	}
-	parsed.Path = ""
-	rootCfg.Host = parsed.String()
 
 	return &IndexableResourceWatcherSubroutine{
 		mgr:           mgr,
@@ -63,6 +57,7 @@ func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient clie
 		orgsClient:    orgsClient,
 		osClient:      osClient,
 		apiExportName: apiExportName,
+		indexPrefix:   indexPrefix,
 		rootCfg:       rootCfg,
 	}, nil
 }
@@ -87,32 +82,45 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
-	clusterID, workspacePath, err := s.getWorkspacePath(ctx)
+	clusterID, workspacePath, err := getWorkspaceClusterAndPath(ctx, s.mgr)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
 	}
 
-	orgName, err := s.extractOrgFromKCPPath(workspacePath)
+	orgName, err := extractOrgFromPath(workspacePath)
 	if err != nil {
 		log.Debug().Msg("Not in an org workspace, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	orgID, err := s.getOrgID(ctx, orgName)
+	orgID, err := getOrgClusterID(ctx, s.orgsClient, orgName)
 	if err != nil {
 		log.Debug().Err(err).Msg("org ID not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
+	consumerCluster, err := s.mgr.GetCluster(ctx, clusterID)
+	if err != nil {
+		log.Debug().Err(err).Msg("could not get consumer cluster, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	m, err := consumerCluster.GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
+	if err != nil {
+		log.Debug().Err(err).Msg("could not resolve plural resource via RESTMapper, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	pluralResource := m.Resource.Resource
+
+	searchIndex, err := getSearchIndex(ctx, s.orgsClient, orgID, pluralResource, s.indexPrefix)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if indexName == "" {
-		log.Debug().Str("orgID", orgID).Msg("search index not ready yet, requeuing")
+	if searchIndex.Status.IndexName == "" {
+		log.Debug().Str("orgID", orgID).Msg("SearchIndex has no IndexName yet, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
+	indexName := searchIndex.Status.IndexName
 
 	resourceClusterID := resolveResourceClusterID(resource, clusterID)
 	docID := s.generateDocumentID(resource, resourceClusterID)
@@ -130,8 +138,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.APIVersion = gvk.Version
 	doc.OrganizationName = orgName
 	doc.OrganizationID = orgID
-	doc.Labels = resource.GetLabels()
-	doc.Annotations = resource.GetAnnotations()
+	doc.CustomFields = extractCustomFields(resource, searchIndex.Spec.DefaultFields)
 
 	accountInfo, err := s.getAccountInfo(ctx, workspacePath, gvk, resource)
 	if err != nil {
@@ -268,62 +275,31 @@ func (s *IndexableResourceWatcherSubroutine) getAccountInfo(ctx context.Context,
 	return nil, nil
 }
 
-func getSearchIndexForOrg(ctx context.Context, orgsClient client.Client, orgID string) (string, error) {
-	searchIndex := v1alpha1.SearchIndex{}
-	err := orgsClient.Get(ctx, types.NamespacedName{Name: orgID}, &searchIndex)
-	if err != nil {
-		return "", fmt.Errorf("failed to get cluster %q: %w", orgID, err)
+func getSearchIndex(ctx context.Context, orgsClient client.Client, orgID string, pluralResource string, indexPrefix string) (*v1alpha1.SearchIndex, error) {
+	searchIndex := &v1alpha1.SearchIndex{}
+	name := buildCanonicalIndexName(indexPrefix, orgID, pluralResource)
+	if err := orgsClient.Get(ctx, types.NamespacedName{Name: name}, searchIndex); err != nil {
+		return nil, fmt.Errorf("failed to get SearchIndex %q: %w", name, err)
 	}
-
-	return searchIndex.Status.IndexName, nil
+	return searchIndex, nil
 }
 
-func (s *IndexableResourceWatcherSubroutine) getWorkspacePath(ctx context.Context) (clusterID string, workspacePath string, err error) {
-	id, ok := mccontext.ClusterFrom(ctx)
-	if !ok {
-		return "", "", fmt.Errorf("cluster not found in context")
+// extractCustomFields copies only the top-level fields listed in defaultFields
+// from the unstructured resource object. Fields not present in the resource are skipped.
+func extractCustomFields(resource *unstructured.Unstructured, defaultFields []string) map[string]any {
+	if len(defaultFields) == 0 {
+		return nil
 	}
-
-	cluster, err := s.mgr.GetCluster(ctx, id)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get cluster %q: %w", id, err)
+	out := make(map[string]any, len(defaultFields))
+	for _, field := range defaultFields {
+		if v, ok := resource.Object[field]; ok {
+			out[field] = v
+		}
 	}
-
-	// Use client.New with the cluster's config directly — cluster.GetClient() is scoped
-	// to the APIExport's exported APIs and cannot reach core.kcp.io resources.
-	cl, err := client.New(cluster.GetConfig(), client.Options{Scheme: cluster.GetScheme()})
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create client for cluster %q: %w", id, err)
+	if len(out) == 0 {
+		return nil
 	}
-	lc := &kcpcorev1alpha1.LogicalCluster{}
-	if err := cl.Get(ctx, client.ObjectKey{Name: kcpcorev1alpha1.LogicalClusterName}, lc); err != nil {
-		return "", "", fmt.Errorf("failed to get LogicalCluster for %q: %w", id, err)
-	}
-
-	path, ok := lc.Annotations[kcpcore.LogicalClusterPathAnnotationKey]
-	if !ok {
-		return "", "", fmt.Errorf("LogicalCluster %q missing %s annotation", id, kcpcore.LogicalClusterPathAnnotationKey)
-	}
-
-	return id, path, nil
-}
-
-func (s *IndexableResourceWatcherSubroutine) extractOrgFromKCPPath(clusterName string) (string, error) {
-	parts := strings.Split(clusterName, ":")
-	if len(parts) < 3 || parts[0] != "root" || parts[1] != "orgs" {
-		return "", fmt.Errorf("not an org workspace")
-	}
-
-	return parts[2], nil
-}
-
-func (s *IndexableResourceWatcherSubroutine) getOrgID(ctx context.Context, orgName string) (string, error) {
-	workspace := &kcptenancyv1alpha1.Workspace{}
-	if err := s.orgsClient.Get(ctx, types.NamespacedName{Name: orgName}, workspace); err != nil {
-		return "", fmt.Errorf("failed to get Workspace %q: %w", orgName, err)
-	}
-
-	return workspace.Spec.Cluster, nil
+	return out
 }
 
 func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
@@ -431,15 +407,7 @@ func resolveSpecClusterID(resource *unstructured.Unstructured) string {
 // getAccountInfoFromWorkspacePath builds a workspace-scoped REST client from the base KCP
 // config and fetches the singleton AccountInfo named "account" from that workspace.
 func (s *IndexableResourceWatcherSubroutine) getAccountInfoFromWorkspacePath(ctx context.Context, accountWorkspacePath string) (*accountv1alpha1.AccountInfo, error) {
-	scopedCfg := rest.CopyConfig(s.rootCfg)
-	parsed, err := url.Parse(scopedCfg.Host)
-	if err != nil {
-		return nil, fmt.Errorf("parse KCP host URL: %w", err)
-	}
-	parsed.Path = fmt.Sprintf("/clusters/%s", accountWorkspacePath)
-	scopedCfg.Host = parsed.String()
-
-	cl, err := client.New(scopedCfg, client.Options{Scheme: s.mgr.GetLocalManager().GetScheme()})
+	cl, err := buildWorkspaceScopedClient(s.rootCfg, s.mgr.GetLocalManager().GetScheme(), accountWorkspacePath)
 	if err != nil {
 		return nil, fmt.Errorf("create scoped client for %q: %w", accountWorkspacePath, err)
 	}
@@ -456,32 +424,45 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
-	clusterID, workspacePath, err := s.getWorkspacePath(ctx)
+	clusterID, workspacePath, err := getWorkspaceClusterAndPath(ctx, s.mgr)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(err, true, false)
 	}
 
-	orgName, err := s.extractOrgFromKCPPath(workspacePath)
+	orgName, err := extractOrgFromPath(workspacePath)
 	if err != nil {
 		log.Debug().Msg("Not in an org workspace, skipping")
 		return ctrl.Result{}, nil
 	}
 
-	orgID, err := s.getOrgID(ctx, orgName)
+	orgID, err := getOrgClusterID(ctx, s.orgsClient, orgName)
 	if err != nil {
 		log.Debug().Err(err).Msg("Workspace not found, will retry")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	indexName, err := getSearchIndexForOrg(ctx, s.orgsClient, orgID)
+	consumerCluster, err := s.mgr.GetCluster(ctx, clusterID)
+	if err != nil {
+		log.Debug().Err(err).Msg("could not get consumer cluster, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	m, err := consumerCluster.GetRESTMapper().RESTMapping(resource.GroupVersionKind().GroupKind())
+	if err != nil {
+		log.Debug().Err(err).Msg("could not resolve plural resource via RESTMapper, requeuing")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	pluralResource := m.Resource.Resource
+
+	searchIndex, err := getSearchIndex(ctx, s.orgsClient, orgID, pluralResource, s.indexPrefix)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if indexName == "" {
+	if searchIndex.Status.IndexName == "" {
 		log.Warn().Str("orgID", orgID).Msg("SearchIndex has no IndexName, cannot delete document")
 		return ctrl.Result{}, nil
 	}
+	indexName := searchIndex.Status.IndexName
 
 	resourceClusterID := resolveResourceClusterID(resource, clusterID)
 	docID := s.generateDocumentID(resource, resourceClusterID)

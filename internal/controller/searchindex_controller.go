@@ -34,9 +34,9 @@ func NewSearchIndexReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osCli
 	}
 }
 
-// +kubebuilder:rbac:groups=core.platform-mesh.io,resources=searchindices,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.platform-mesh.io,resources=searchindices/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.platform-mesh.io,resources=searchindices/finalizers,verbs=update
+// +kubebuilder:rbac:groups=search.platform-mesh.io,resources=searchindices,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=search.platform-mesh.io,resources=searchindices/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=search.platform-mesh.io,resources=searchindices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apibindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apiexports,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core.kcp.io,resources=logicalclusters,verbs=get;list;watch

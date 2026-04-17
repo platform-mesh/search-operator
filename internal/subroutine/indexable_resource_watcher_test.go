@@ -7,6 +7,8 @@ import (
 
 	accountv1alpha1 "github.com/platform-mesh/account-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/platform-mesh/search-operator/api/v1alpha1"
 )
 
 func TestBuildPayloadSeparatesRawJSONFromText(t *testing.T) {
@@ -137,33 +139,33 @@ func TestMapResourceToFGAObject(t *testing.T) {
 		wantCluster string
 	}{
 		{
-			name:        "account maps to core account using OriginClusterId",
-			group:       "core.platform-mesh.io",
-			kind:        "Account",
+			name:        "account maps to search account using OriginClusterId",
+			group:       v1alpha1.GroupName,
+			kind:        v1alpha1.AccountKind,
 			clusterID:   "acc-cluster",
 			accountInfo: accountInfo,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "account-origin",
 		},
 		{
-			name:        "workspace maps to core account using OriginClusterId",
+			name:        "workspace maps to search account using OriginClusterId",
 			group:       "tenancy.kcp.io",
 			kind:        "Workspace",
 			clusterID:   "ws-cluster",
 			accountInfo: accountInfo,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "account-origin",
 		},
 		{
-			name:        "organization maps to core account preserving origin cluster id",
-			group:       "core.platform-mesh.io",
-			kind:        "Organization",
+			name:        "organization maps to search account preserving origin cluster id",
+			group:       v1alpha1.GroupName,
+			kind:        v1alpha1.OrganizationKind,
 			clusterID:   "org-resource-cluster",
 			accountInfo: accountInfo,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "org-origin",
 		},
 		{
@@ -178,12 +180,12 @@ func TestMapResourceToFGAObject(t *testing.T) {
 		},
 		{
 			name:        "account-like resource without accountInfo falls back to clusterID",
-			group:       "core.platform-mesh.io",
-			kind:        "Account",
+			group:       v1alpha1.GroupName,
+			kind:        v1alpha1.AccountKind,
 			clusterID:   "acc-cluster",
 			accountInfo: nil,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "acc-cluster",
 		},
 	}

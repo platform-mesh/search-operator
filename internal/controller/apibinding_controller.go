@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -20,7 +21,6 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"github.com/platform-mesh/search-operator/internal/subroutine"
 )
 
@@ -28,28 +28,27 @@ import (
 type APIBindingReconciler struct {
 	log         *logger.Logger
 	mclifecycle *multicluster.LifecycleManager
-	allClient   client.Client
 }
 
-// NewAPIBindingReconciler creates a new APIBinding reconciler
-// If osClient is nil, only the APIBindingWatcher subroutine is used (no indexing)
-func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, osClient *opensearch.Client, apiExportName string) (*APIBindingReconciler, error) {
-	// Create a wildcard client for cross-workspace queries
-	allClient, err := GetAllClient(mcMgr.GetLocalManager().GetConfig(), mcMgr.GetLocalManager().GetScheme())
+// NewAPIBindingReconciler creates a new APIBinding reconciler.
+func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, indexPrefix string) (*APIBindingReconciler, error) {
+	localMgr := mcMgr.GetLocalManager()
+
+	orgsClient, err := subroutine.GetScopedClient(localMgr.GetConfig(), localMgr.GetScheme(), "root:orgs")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create root:orgs scoped client: %w", err)
 	}
 
-	// Build subroutines list
-	subroutines := []lifecyclesubroutine.Subroutine{
-		subroutine.NewAPIBindingWatcherSubroutine(mcMgr, allClient, apiExportName),
+	watcherSubroutine, err := subroutine.NewAPIBindingWatcherSubroutine(mcMgr, orgsClient, localMgr.GetConfig(), indexPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("create APIBindingWatcherSubroutine: %w", err)
 	}
 
 	return &APIBindingReconciler{
-		log:       log,
-		allClient: allClient,
-		mclifecycle: builder.NewBuilder("apibinding", "APIBindingReconciler", subroutines, log).
-			BuildMultiCluster(mcMgr),
+		log: log,
+		mclifecycle: builder.NewBuilder("apibinding", "APIBindingReconciler", []lifecyclesubroutine.Subroutine{
+			watcherSubroutine,
+		}, log).BuildMultiCluster(mcMgr),
 	}, nil
 }
 
@@ -67,27 +66,6 @@ func (r *APIBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 // SetupWithManager sets up the controller with the multicluster Manager.
 func (r *APIBindingReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, evp ...predicate.Predicate) error {
 	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "apibinding", &kcpv1alpha1.APIBinding{}, "", r, r.log, evp...)
-}
-
-// GetScopedClient creates a client scoped to a specific logical cluster path (e.g. "root:orgs")
-func GetScopedClient(cfg *rest.Config, scheme *runtime.Scheme, clusterPath string) (client.Client, error) {
-	scopedCfg := rest.CopyConfig(cfg)
-	parsed, err := url.Parse(scopedCfg.Host)
-	if err != nil {
-		return nil, err
-	}
-	requestPath := logicalcluster.NewPath(clusterPath).RequestPath()
-	parts := strings.Split(parsed.Path, "clusters")
-	if len(parts) > 0 {
-		parsed.Path, err = url.JoinPath(parts[0], requestPath)
-	} else {
-		parsed.Path, err = url.JoinPath("/", requestPath)
-	}
-	if err != nil {
-		return nil, err
-	}
-	scopedCfg.Host = parsed.String()
-	return client.New(scopedCfg, client.Options{Scheme: scheme})
 }
 
 // GetAllClient creates a client that can query across all workspaces using the wildcard cluster
