@@ -16,7 +16,7 @@ rules:
 - apiGroups:
   - core.platform-mesh.io
   resources:
-  - searchindices
+  - searchindexes
   verbs:
   - create
   - delete
@@ -28,6 +28,6 @@ rules:
 - apiGroups:
   - core.platform-mesh.io
   resources:
-  - searchindices/status
+  - searchindexes/status
   verbs:
   - get

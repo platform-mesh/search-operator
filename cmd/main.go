@@ -30,6 +30,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	accountv1alpha1 "github.com/platform-mesh/account-operator/api/v1alpha1"
+
 	corev1alpha1 "github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/config"
 	"github.com/platform-mesh/search-operator/internal/controller"
@@ -74,7 +75,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&kcpKubeconfig, "kcp-kubeconfig", "/etc/kcp/kubeconfig",
 		"Path to the KCP kubeconfig file.")
-	flag.StringVar(&apiExportEndpointSliceName, "api-export-endpoint-slice-name", "core.platform-mesh.io",
+	flag.StringVar(&apiExportEndpointSliceName, "api-export-endpoint-slice-name", "search-dxp.sap.com",
 		"Name of the APIExportEndpointSlice to use for the multicluster provider.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
@@ -162,26 +163,40 @@ func main() {
 	setupLog.Info("OpenSearch client connected successfully")
 
 	// Setup SearchIndex controller using lifecycle manager pattern
-	if err := controller.NewSearchIndexReconciler(log, mgr, osClient, cfg.OpenSearch.IndexNamePrefix).
-		SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+	if err := controller.NewSearchIndexReconciler(
+		log, mgr, osClient, cfg.OpenSearch.IndexNamePrefix, cfg.OpenSearch.SemanticModelID,
+	).SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "SearchIndex")
 		os.Exit(1)
 	}
 
-	// Setup APIBinding controller for watching resources across workspaces
+	// Setup IndexableResource controllers for each configured searchable resource type
 	for _, GVK := range cfg.SearchableResource.Resources {
 		obj := &unstructured.Unstructured{}
 		obj.SetGroupVersionKind(GVK)
 		idxRssReconciler, err := controller.NewIndexableResource(log, *cfg, mgr, osClient, apiExportEndpointSliceName, obj)
 		if err != nil {
-			setupLog.Error(err, "unable to create APIBinding reconciler")
+			setupLog.Error(err, "unable to create IndexableResource reconciler")
 			os.Exit(1)
 		}
 		if err := idxRssReconciler.SetupWithManager(mgr, maxConcurrentReconciles, obj); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
+			setupLog.Error(err, "unable to create controller", "controller", "IndexableResource")
 			os.Exit(1)
 		}
 	}
+
+	// Setup APIBinding controller: reconciles APIBindings and ensures SearchIndex resources
+	// in the owning org workspace for each bound export.
+	apiBindingReconciler, err := controller.NewAPIBindingReconciler(log, mgr, cfg.OpenSearch.IndexNamePrefix)
+	if err != nil {
+		setupLog.Error(err, "unable to create APIBinding reconciler")
+		os.Exit(1)
+	}
+	if err := apiBindingReconciler.SetupWithManager(mgr, maxConcurrentReconciles); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "APIBinding")
+		os.Exit(1)
+	}
+
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

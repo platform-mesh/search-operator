@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	accountv1alpha1 "github.com/platform-mesh/account-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/platform-mesh/search-operator/api/v1alpha1"
+	"github.com/platform-mesh/search-operator/internal/opensearch"
 )
 
 func TestBuildPayloadSeparatesRawJSONFromText(t *testing.T) {
@@ -137,33 +141,33 @@ func TestMapResourceToFGAObject(t *testing.T) {
 		wantCluster string
 	}{
 		{
-			name:        "account maps to core account using OriginClusterId",
-			group:       "core.platform-mesh.io",
-			kind:        "Account",
+			name:        "account maps to search account using OriginClusterId",
+			group:       v1alpha1.GroupName,
+			kind:        v1alpha1.AccountKind,
 			clusterID:   "acc-cluster",
 			accountInfo: accountInfo,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "account-origin",
 		},
 		{
-			name:        "workspace maps to core account using OriginClusterId",
+			name:        "workspace maps to search account using OriginClusterId",
 			group:       "tenancy.kcp.io",
 			kind:        "Workspace",
 			clusterID:   "ws-cluster",
 			accountInfo: accountInfo,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "account-origin",
 		},
 		{
-			name:        "organization maps to core account preserving origin cluster id",
-			group:       "core.platform-mesh.io",
-			kind:        "Organization",
+			name:        "organization maps to search account preserving origin cluster id",
+			group:       v1alpha1.GroupName,
+			kind:        v1alpha1.OrganizationKind,
 			clusterID:   "org-resource-cluster",
 			accountInfo: accountInfo,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "org-origin",
 		},
 		{
@@ -178,12 +182,12 @@ func TestMapResourceToFGAObject(t *testing.T) {
 		},
 		{
 			name:        "account-like resource without accountInfo falls back to clusterID",
-			group:       "core.platform-mesh.io",
-			kind:        "Account",
+			group:       v1alpha1.GroupName,
+			kind:        v1alpha1.AccountKind,
 			clusterID:   "acc-cluster",
 			accountInfo: nil,
-			wantGroup:   "core.platform-mesh.io",
-			wantKind:    "Account",
+			wantGroup:   v1alpha1.GroupName,
+			wantKind:    v1alpha1.AccountKind,
 			wantCluster: "acc-cluster",
 		},
 	}
@@ -271,5 +275,58 @@ func TestResolveAccountInfoLookupClusters(t *testing.T) {
 	gotDup := resolveAccountInfoLookupClusters(resourceDup, "ctx-cluster", "ctx-cluster")
 	if len(gotDup) != 1 || gotDup[0] != "ctx-cluster" {
 		t.Fatalf("resolveAccountInfoLookupClusters() dedupe = %v, want [ctx-cluster]", gotDup)
+	}
+}
+
+func TestExtractConfiguredFieldsSupportsNestedPaths(t *testing.T) {
+	resource := &unstructured.Unstructured{
+		Object: map[string]any{
+			"description": "top-level description",
+			"spec": map[string]any{
+				"summary": "nested summary",
+			},
+		},
+	}
+
+	got := extractConfiguredFields(resource, []string{"description", "spec.summary", "spec.missing"})
+	if len(got) != 2 {
+		t.Fatalf("extractConfiguredFields() len = %d, want 2 (%v)", len(got), got)
+	}
+	if got["description"] != "top-level description" {
+		t.Fatalf("description = %v, want top-level description", got["description"])
+	}
+	if got["spec.summary"] != "nested summary" {
+		t.Fatalf("spec.summary = %v, want nested summary", got["spec.summary"])
+	}
+}
+
+func TestBuildDocumentSourceAddsConfiguredFields(t *testing.T) {
+	doc := &opensearch.ResourceDocument{
+		ID:            "doc-1",
+		Kind:          "Component",
+		Name:          "component-a",
+		ClusterName:   "root:orgs:sap",
+		WorkspacePath: "root:orgs:sap:team-a",
+		UpdatedAt:     time.Unix(0, 0).UTC(),
+	}
+
+	source, err := buildDocumentSource(doc, map[string]any{
+		"description":  "top-level description",
+		"spec.summary": "nested summary",
+	})
+	if err != nil {
+		t.Fatalf("buildDocumentSource() returned error: %v", err)
+	}
+
+	if got := source["description"]; got != "top-level description" {
+		t.Fatalf("description = %v, want top-level description", got)
+	}
+
+	spec, ok := source["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec = %T, want map[string]any", source["spec"])
+	}
+	if got := spec["summary"]; got != "nested summary" {
+		t.Fatalf("spec.summary = %v, want nested summary", got)
 	}
 }
