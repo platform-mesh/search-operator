@@ -16,12 +16,12 @@ rules:
 - apiGroups:
   - core.platform-mesh.io
   resources:
-  - searchindices
+  - searchindexes
   verbs:
   - '*'
 - apiGroups:
   - core.platform-mesh.io
   resources:
-  - searchindices/status
+  - searchindexes/status
   verbs:
   - get

@@ -4,13 +4,13 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: searchindices.search.platform-mesh.io
+  name: searchindexes.search.platform-mesh.io
 spec:
   group: search.platform-mesh.io
   names:
     kind: SearchIndex
     listKind: SearchIndexList
-    plural: searchindices
+    plural: searchindexes
     singular: searchindex
   scope: Cluster
   versions:
