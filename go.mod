@@ -8,7 +8,7 @@ require (
 	github.com/kcp-dev/sdk v0.30.1
 	github.com/openfga/api/proto v0.0.0-20260319214821-f153694bfc20
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
-	github.com/platform-mesh/account-operator v0.13.0
+	github.com/platform-mesh/account-operator v0.13.2
 	github.com/platform-mesh/golang-commons v0.15.6
 	github.com/vrischmann/envconfig v1.4.1
 	k8s.io/apimachinery v0.35.3
