@@ -9,7 +9,7 @@ require (
 	github.com/openfga/api/proto v0.0.0-20260319214821-f153694bfc20
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 	github.com/platform-mesh/account-operator v0.14.7
-	github.com/platform-mesh/golang-commons v0.15.7
+	github.com/platform-mesh/golang-commons v0.15.8
 	github.com/vrischmann/envconfig v1.4.1
 	k8s.io/apimachinery v0.35.4
 	k8s.io/client-go v0.35.4
@@ -29,7 +29,7 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
-	github.com/getsentry/sentry-go v0.44.1 // indirect
+	github.com/getsentry/sentry-go v0.45.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
