@@ -9,7 +9,7 @@ require (
 	github.com/openfga/api/proto v0.0.0-20260319214821-f153694bfc20
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 	github.com/platform-mesh/account-operator v0.14.10
-	github.com/platform-mesh/golang-commons v0.16.1
+	github.com/platform-mesh/golang-commons v0.16.2
 	github.com/vrischmann/envconfig v1.4.1
 	k8s.io/apimachinery v0.35.4
 	k8s.io/client-go v0.35.4
