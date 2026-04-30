@@ -8,7 +8,7 @@ require (
 	github.com/kcp-dev/sdk v0.31.0
 	github.com/openfga/api/proto v0.0.0-20260319214821-f153694bfc20
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
-	github.com/platform-mesh/account-operator v0.14.14
+	github.com/platform-mesh/account-operator v0.14.16
 	github.com/platform-mesh/golang-commons v0.16.5
 	github.com/vrischmann/envconfig v1.4.1
 	k8s.io/apimachinery v0.35.4
@@ -94,7 +94,7 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/api v0.35.4 // indirect
-	k8s.io/apiextensions-apiserver v0.35.3 // indirect
+	k8s.io/apiextensions-apiserver v0.35.4 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5 // indirect
