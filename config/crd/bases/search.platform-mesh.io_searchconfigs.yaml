@@ -4,30 +4,28 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: searchindices.search.platform-mesh.io
+  name: searchconfigs.search.platform-mesh.io
 spec:
   group: search.platform-mesh.io
   names:
-    kind: SearchIndex
-    listKind: SearchIndexList
-    plural: searchindices
-    singular: searchindex
+    kind: SearchConfig
+    listKind: SearchConfigList
+    plural: searchconfigs
+    singular: searchconfig
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.indexName
-      name: Index
+    - jsonPath: .spec.apiResourceSchemaRef.name
+      name: Schema
       type: string
-    - jsonPath: .status.documentCount
-      name: Documents
-      type: integer
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: SearchIndex configures search indexing for a workspace
+        description: SearchConfig declares per-APIResourceSchema field indexing behavior
+          for the search operator.
         properties:
           apiVersion:
             description: |-
@@ -47,59 +45,48 @@ spec:
           metadata:
             type: object
           spec:
-            description: Spec defines the desired state of SearchIndex
+            description: Spec defines the desired field indexing configuration.
             properties:
-              defaultFields:
+              apiResourceSchemaRef:
+                description: APIResourceSchemaRef identifies the APIResourceSchema
+                  this config applies to.
+                properties:
+                  name:
+                    description: Name is the metadata.name of the APIResourceSchema
+                      this config applies to.
+                    type: string
+                required:
+                - name
+                type: object
+              exactFields:
                 description: |-
-                  DefaultFields lists all field paths derived from the APIResourceSchemas of
-                  bound APIExports. Every field present in a custom resource schema is reflected here.
+                  ExactFields lists field paths to be indexed as keyword for exact-match filtering/faceting.
+                  These are typically identifiers, enums, or structured values.
                 items:
                   type: string
                 type: array
-              filterableFields:
-                description: FilterableFields lists field paths to be used as exact-match
-                  filter facets.
+              excludedFields:
+                description: |-
+                  ExcludedFields lists field paths that should NOT be indexed at all.
+                  These fields are removed from defaultFields, semanticFields, and filterableFields.
                 items:
                   type: string
                 type: array
-              indexPrefix:
-                description: IndexPrefix is prepended to all index names for this
-                  workspace
-                pattern: ^[a-z][a-z0-9-]*$
-                type: string
-              numberOfReplicas:
-                default: 1
-                format: int32
-                type: integer
-              numberOfShards:
-                default: 1
-                format: int32
-                type: integer
-              organizationClusterID:
-                description: OrganizationClusterID immutable KCP cluster ID (LogicalCluster's
-                  kcp.io/cluster annotation); used as OpenSearch index name
-                pattern: ^[a-z0-9][a-z0-9-]*$
-                type: string
-              paused:
-                description: Paused stops all indexing when true
-                type: boolean
               semanticFields:
-                description: SemanticFields lists field paths to be used for semantic
-                  / vector search.
+                description: |-
+                  SemanticFields lists field paths to be indexed for vector/semantic search.
+                  These are typically human-readable text fields where meaning matters.
                 items:
                   type: string
                 type: array
             required:
-            - indexPrefix
-            - numberOfReplicas
-            - numberOfShards
-            - organizationClusterID
+            - apiResourceSchemaRef
             type: object
           status:
-            description: Status defines the observed state of SearchIndex
+            description: Status defines the observed state of SearchConfig.
             properties:
               conditions:
-                description: Conditions represent the current state of the SearchIndex
+                description: Conditions represent the current state of the SearchConfig
                   resource.
                 items:
                   description: Condition contains details for one aspect of the current
@@ -159,17 +146,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              documentCount:
-                description: DocumentCount is the number of documents indexed
-                format: int64
-                type: integer
-              indexName:
-                description: IndexName is the OpenSearch index name
-                type: string
-              lastSyncTime:
-                description: LastSyncTime is the last successful sync time
-                format: date-time
-                type: string
             type: object
         required:
         - spec
