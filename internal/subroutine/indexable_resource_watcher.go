@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"sigs.k8s.io/yaml"
-
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
@@ -138,8 +136,9 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	doc.APIVersion = gvk.Version
 	doc.OrganizationName = orgName
 	doc.OrganizationID = orgID
-	doc.CustomFields = extractCustomFields(resource, searchIndex.Spec.DefaultFields)
-	semanticFieldValues := extractConfiguredFields(resource, searchIndex.Spec.SemanticFields)
+	doc.DefaultFields = extractConfiguredFields(resource, searchIndex.Spec.DefaultFields)
+	doc.SemanticFields = extractStringConfiguredFields(resource, searchIndex.Spec.SemanticFields)
+	doc.FilterableFields = extractFilterableFields(resource, searchIndex.Spec.FilterableFields)
 
 	accountInfo, err := s.getAccountInfo(ctx, workspacePath, gvk, resource)
 	if err != nil {
@@ -189,18 +188,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 		addParentPermissions(doc, fgamodel.BuildParentTuples(parentObject, doc.FGAObject, nil))
 	}
 
-	payloadRawJSON, payloadText, payloadErr := buildPayload(resource)
-	if payloadErr != nil {
-		return ctrl.Result{}, errors.NewOperatorError(
-			fmt.Errorf("failed to build payload for %s/%s: %w", resource.GetKind(), resource.GetName(), payloadErr),
-			true,
-			false,
-		)
-	}
-	doc.PayloadRawJSON = payloadRawJSON
-	doc.PayloadText = payloadText
-
-	documentBody, err := buildDocumentSource(doc, semanticFieldValues)
+	documentBody, err := buildDocumentSource(doc)
 	if err != nil {
 		return ctrl.Result{}, errors.NewOperatorError(
 			fmt.Errorf("failed to build document source for %s: %w", docID, err), true, false,
@@ -292,51 +280,86 @@ func getSearchIndex(ctx context.Context, orgsClient client.Client, orgID string,
 	return searchIndex, nil
 }
 
-// extractCustomFields copies only the top-level fields listed in defaultFields
-// from the unstructured resource object. Fields not present in the resource are skipped.
-func extractCustomFields(resource *unstructured.Unstructured, defaultFields []string) map[string]any {
-	if len(defaultFields) == 0 {
+// extractConfiguredFields copies the configured dot-notation paths from the
+// unstructured resource object into an output map with the same nested shape.
+func extractConfiguredFields(resource *unstructured.Unstructured, fieldNames []string) map[string]any {
+	return extractFieldPaths(resource, fieldNames, nil)
+}
+
+func extractStringConfiguredFields(resource *unstructured.Unstructured, fieldNames []string) map[string]any {
+	return extractFieldPaths(resource, fieldNames, func(value any) (any, bool) {
+		_, ok := value.(string)
+		return value, ok
+	})
+}
+
+func extractFilterableFields(resource *unstructured.Unstructured, fieldNames []string) map[string]any {
+	return extractFieldPaths(resource, fieldNames, normalizeFilterableValue)
+}
+
+func extractFieldPaths(resource *unstructured.Unstructured, fieldNames []string, transformValue func(any) (any, bool)) map[string]any {
+	if len(fieldNames) == 0 {
 		return nil
 	}
-	out := make(map[string]any, len(defaultFields))
-	for _, field := range defaultFields {
-		if v, ok := resource.Object[field]; ok {
-			out[field] = v
+
+	out := make(map[string]any, len(fieldNames))
+	for _, fieldPath := range fieldNames {
+		segments := splitFieldPath(fieldPath)
+		if len(segments) == 0 {
+			continue
 		}
+		value, ok := lookupFieldPath(resource.Object, segments)
+		if !ok {
+			continue
+		}
+		if transformValue != nil {
+			var include bool
+			value, include = transformValue(value)
+			if !include {
+				continue
+			}
+		}
+		setFieldPath(out, segments, value)
 	}
+
 	if len(out) == 0 {
 		return nil
 	}
+
 	return out
 }
 
-// extractConfiguredFields resolves field paths from the unstructured resource object.
-// Dotted paths are traversed as nested maps.
-func extractConfiguredFields(resource *unstructured.Unstructured, fieldPaths []string) map[string]any {
-	if len(fieldPaths) == 0 {
-		return nil
-	}
-
-	out := make(map[string]any, len(fieldPaths))
-	for _, fieldPath := range fieldPaths {
-		if value, ok := lookupFieldPath(resource.Object, fieldPath); ok {
-			out[fieldPath] = value
+func normalizeFilterableValue(value any) (any, bool) {
+	switch v := value.(type) {
+	case string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return v, true
+	case []string:
+		return v, len(v) > 0
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			normalized, ok := normalizeFilterableValue(item)
+			if !ok {
+				return nil, false
+			}
+			if normalizedItems, ok := normalized.([]string); ok {
+				for _, normalizedItem := range normalizedItems {
+					out = append(out, normalizedItem)
+				}
+				continue
+			}
+			if _, ok := normalized.([]any); ok {
+				return nil, false
+			}
+			out = append(out, normalized)
 		}
-	}
-
-	if len(out) == 0 {
-		return nil
-	}
-
-	return out
-}
-
-func lookupFieldPath(obj map[string]any, fieldPath string) (any, bool) {
-	segments := opensearchSplitFieldPath(fieldPath)
-	if len(segments) == 0 {
+		return out, len(out) > 0
+	default:
 		return nil, false
 	}
+}
 
+func lookupFieldPath(obj map[string]any, segments []string) (any, bool) {
 	var current any = obj
 	for _, segment := range segments {
 		currentMap, ok := current.(map[string]any)
@@ -348,63 +371,26 @@ func lookupFieldPath(obj map[string]any, fieldPath string) (any, bool) {
 			return nil, false
 		}
 	}
-
 	return current, true
 }
 
-func buildDocumentSource(doc *opensearch.ResourceDocument, configuredFields map[string]any) (map[string]any, error) {
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		return nil, fmt.Errorf("marshal resource document: %w", err)
-	}
-
-	var source map[string]any
-	if err := json.Unmarshal(raw, &source); err != nil {
-		return nil, fmt.Errorf("unmarshal resource document: %w", err)
-	}
-
-	for fieldPath, value := range configuredFields {
-		if err := setFieldPath(source, fieldPath, value); err != nil {
-			return nil, err
-		}
-	}
-
-	return source, nil
-}
-
-func setFieldPath(target map[string]any, fieldPath string, value any) error {
-	segments := opensearchSplitFieldPath(fieldPath)
-	if len(segments) == 0 {
-		return nil
-	}
-
+func setFieldPath(target map[string]any, segments []string, value any) {
 	current := target
 	for i, segment := range segments {
-		isLeaf := i == len(segments)-1
-		if isLeaf {
+		if i == len(segments)-1 {
 			current[segment] = value
-			return nil
+			return
 		}
-
-		next, exists := current[segment]
-		if !exists || next == nil {
-			nextMap := map[string]any{}
-			current[segment] = nextMap
-			current = nextMap
-			continue
-		}
-
-		nextMap, ok := next.(map[string]any)
+		next, ok := current[segment].(map[string]any)
 		if !ok {
-			return fmt.Errorf("field path %q conflicts with non-object segment %q", fieldPath, segment)
+			next = make(map[string]any)
+			current[segment] = next
 		}
-		current = nextMap
+		current = next
 	}
-
-	return nil
 }
 
-func opensearchSplitFieldPath(fieldPath string) []string {
+func splitFieldPath(fieldPath string) []string {
 	rawSegments := strings.Split(strings.TrimSpace(fieldPath), ".")
 	segments := make([]string, 0, len(rawSegments))
 	for _, segment := range rawSegments {
@@ -415,6 +401,20 @@ func opensearchSplitFieldPath(fieldPath string) []string {
 		segments = append(segments, segment)
 	}
 	return segments
+}
+
+func buildDocumentSource(doc *opensearch.ResourceDocument) (map[string]any, error) {
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("marshal resource document: %w", err)
+	}
+
+	var source map[string]any
+	if err := json.Unmarshal(raw, &source); err != nil {
+		return nil, fmt.Errorf("unmarshal resource document: %w", err)
+	}
+
+	return source, nil
 }
 
 func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
@@ -432,25 +432,6 @@ func (s *IndexableResourceWatcherSubroutine) generateDocumentID(
 		resource.GetKind(),
 		resource.GetName(),
 	)
-}
-
-func buildPayload(resource *unstructured.Unstructured) (string, string, error) {
-	raw := resource.DeepCopy().Object
-	if metadata, ok := raw["metadata"].(map[string]any); ok {
-		delete(metadata, "managedFields")
-	}
-
-	jsonBytes, err := json.Marshal(raw)
-	if err != nil {
-		return "", "", err
-	}
-
-	yamlBytes, err := yaml.Marshal(raw)
-	if err != nil {
-		yamlBytes = jsonBytes
-	}
-
-	return string(jsonBytes), string(yamlBytes), nil
 }
 
 func mapResourceToFGAObject(group, kind, clusterID string, accountInfo *accountv1alpha1.AccountInfo) (fgaGroup, fgaKind, fgaClusterID string) {

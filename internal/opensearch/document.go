@@ -8,9 +8,7 @@ import (
 )
 
 // DefaultIndexMapping returns the default OpenSearch index mapping for workspace and resource documents.
-// - payload_raw is stored but not indexed (enabled=false).
-// - payload_text stores the full serialized object for full-text search.
-func DefaultIndexMapping(semanticFields []string, semanticModelID string) (string, error) {
+func DefaultIndexMapping(_ []string, semanticFields, _ []string, semanticModelID string) (string, error) {
 	properties := map[string]any{
 		"id": map[string]any{"type": "keyword"},
 		"name": map[string]any{
@@ -42,26 +40,41 @@ func DefaultIndexMapping(semanticFields []string, semanticModelID string) (strin
 				"object":   map[string]any{"type": "keyword"},
 			},
 		},
-		"created_at":       map[string]any{"type": "date"},
-		"updated_at":       map[string]any{"type": "date"},
-		"payload_raw_json": map[string]any{"type": "keyword", "index": false, "doc_values": false},
-		"payload_text":     map[string]any{"type": "text"},
+		"created_at":      map[string]any{"type": "date"},
+		"updated_at":      map[string]any{"type": "date"},
+		"default_fields":  map[string]any{"type": "object", "dynamic": true},
+		"semantic_fields": map[string]any{"type": "object", "dynamic": false, "properties": map[string]any{}},
+		"filterable_fields": map[string]any{
+			"type":    "object",
+			"dynamic": true,
+		},
 	}
 
-	if len(semanticFields) > 0 {
+	semanticProperties := properties["semantic_fields"].(map[string]any)["properties"].(map[string]any)
+	semanticFieldPaths := normalizedFieldPaths(semanticFields)
+	if len(semanticFieldPaths) > 0 {
 		semanticModelID = strings.TrimSpace(semanticModelID)
 		if semanticModelID == "" {
 			return "", fmt.Errorf("semantic model id is required when semantic fields are configured")
 		}
-		for _, fieldPath := range semanticFields {
-			if err := addSemanticFieldMapping(properties, fieldPath, semanticModelID); err != nil {
+		for _, fieldPath := range semanticFieldPaths {
+			if err := addSemanticFieldMapping(semanticProperties, fieldPath, semanticModelID); err != nil {
 				return "", err
 			}
 		}
 	}
 
 	mapping := map[string]any{
-		"dynamic":    false,
+		"dynamic": false,
+		"dynamic_templates": []map[string]any{
+			{
+				"filterable_fields_keywords": map[string]any{
+					"path_match":         "filterable_fields.*",
+					"match_mapping_type": "string",
+					"mapping":            map[string]any{"type": "keyword"},
+				},
+			},
+		},
 		"properties": properties,
 	}
 
@@ -73,6 +86,23 @@ func DefaultIndexMapping(semanticFields []string, semanticModelID string) (strin
 	return string(raw), nil
 }
 
+func normalizedFieldPaths(fields []string) []string {
+	seen := make(map[string]struct{}, len(fields))
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if _, exists := seen[field]; exists {
+			continue
+		}
+		seen[field] = struct{}{}
+		out = append(out, field)
+	}
+	return out
+}
+
 func addSemanticFieldMapping(properties map[string]any, fieldPath, semanticModelID string) error {
 	segments := splitFieldPath(fieldPath)
 	if len(segments) == 0 {
@@ -81,11 +111,9 @@ func addSemanticFieldMapping(properties map[string]any, fieldPath, semanticModel
 
 	current := properties
 	for i, segment := range segments {
-		existing, exists := current[segment]
 		isLeaf := i == len(segments)-1
-
 		if isLeaf {
-			if exists {
+			if existing, exists := current[segment]; exists {
 				existingMap, ok := existing.(map[string]any)
 				if !ok {
 					return fmt.Errorf("semantic field %q conflicts with existing non-object mapping", fieldPath)
@@ -101,30 +129,31 @@ func addSemanticFieldMapping(properties map[string]any, fieldPath, semanticModel
 			return nil
 		}
 
+		next, exists := current[segment]
 		if !exists {
-			next := map[string]any{
+			nextMap := map[string]any{
 				"type":       "object",
+				"dynamic":    false,
 				"properties": map[string]any{},
 			}
-			current[segment] = next
-			current = next["properties"].(map[string]any)
+			current[segment] = nextMap
+			current = nextMap["properties"].(map[string]any)
 			continue
 		}
 
-		existingMap, ok := existing.(map[string]any)
+		nextMap, ok := next.(map[string]any)
 		if !ok {
-			return fmt.Errorf("semantic field %q conflicts with existing non-object mapping at %q", fieldPath, segment)
+			return fmt.Errorf("semantic field %q conflicts with non-object segment %q", fieldPath, segment)
 		}
-		if existingType, _ := existingMap["type"].(string); existingType != "" && existingType != "object" {
+		if existingType, _ := nextMap["type"].(string); existingType != "" && existingType != "object" {
 			return fmt.Errorf("semantic field %q conflicts with existing %q mapping at %q", fieldPath, existingType, segment)
 		}
-
-		nextProps, ok := existingMap["properties"].(map[string]any)
+		nextProperties, ok := nextMap["properties"].(map[string]any)
 		if !ok {
-			nextProps = map[string]any{}
-			existingMap["properties"] = nextProps
+			nextProperties = map[string]any{}
+			nextMap["properties"] = nextProperties
 		}
-		current = nextProps
+		current = nextProperties
 	}
 
 	return nil
@@ -218,23 +247,13 @@ type ResourceDocument struct {
 	Labels      map[string]string `json:"labels,omitempty"`
 	Annotations map[string]string `json:"annotations,omitempty"`
 
-	// Resource spec and status (arbitrary nested maps from the unstructured object)
-	Spec   map[string]interface{} `json:"spec,omitempty"`
-	Status map[string]interface{} `json:"status,omitempty"`
-
-	// CustomFields holds fields from the unstructured resource that are listed in
-	// the SearchIndex's DefaultFields. These are propagated directly from the resource.
-	CustomFields map[string]any `json:"custom_fields,omitempty"`
+	DefaultFields    map[string]any `json:"default_fields,omitempty"`
+	SemanticFields   map[string]any `json:"semantic_fields,omitempty"`
+	FilterableFields map[string]any `json:"filterable_fields,omitempty"`
 
 	// Timestamps
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
-
-	// Full raw object payload serialized as JSON, stored but not indexed.
-	PayloadRawJSON string `json:"payload_raw_json,omitempty"`
-
-	// Full serialized object payload for full-text search.
-	PayloadText string `json:"payload_text,omitempty"`
 }
 
 // NewWorkspaceDocument creates a new workspace document with default values
