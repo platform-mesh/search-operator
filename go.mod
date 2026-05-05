@@ -9,7 +9,7 @@ require (
 	github.com/openfga/api/proto v0.0.0-20260319214821-f153694bfc20
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 	github.com/platform-mesh/account-operator v0.14.22
-	github.com/platform-mesh/golang-commons v0.16.7
+	github.com/platform-mesh/golang-commons v0.16.8
 	github.com/vrischmann/envconfig v1.4.1
 	k8s.io/apimachinery v0.35.4
 	k8s.io/client-go v0.35.4
@@ -59,7 +59,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
-	github.com/rs/zerolog v1.35.0 // indirect
+	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/sosodev/duration v1.4.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.32 // indirect
