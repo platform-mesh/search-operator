@@ -11,12 +11,15 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/opensearch-project/opensearch-go/v4"
 	"github.com/opensearch-project/opensearch-go/v4/opensearchapi"
 	"github.com/opensearch-project/opensearch-go/v4/opensearchutil"
 	"github.com/platform-mesh/golang-commons/logger"
+
 	"github.com/platform-mesh/search-operator/internal/config"
+	"github.com/platform-mesh/search-operator/internal/metrics"
 )
 
 // Client wraps the OpenSearch client with convenience methods
@@ -105,7 +108,16 @@ type IndexSettings struct {
 }
 
 // CreateIndex creates an index if it doesn't exist and applies initial settings.
-func (c *Client) CreateIndex(ctx context.Context, indexName string, numberOfShards, numberOfReplicas int32, mapping string) error {
+func (c *Client) CreateIndex(ctx context.Context, indexName string, numberOfShards, numberOfReplicas int32, mapping string) (err error) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if err != nil {
+			labelResult = "error"
+		}
+		metrics.OpenSearchOperationsTotal.WithLabelValues("create_index", labelResult).Inc()
+		metrics.OpenSearchOperationDuration.WithLabelValues("create_index").Observe(time.Since(start).Seconds())
+	}()
 	log := logger.LoadLoggerFromContext(ctx)
 
 	exists, err := c.IndexExists(ctx, indexName)
@@ -216,9 +228,18 @@ func (c *Client) GetIndexSettings(ctx context.Context, indexName string) (IndexS
 }
 
 // UpdateIndexReplicas updates number_of_replicas for an existing index.
-func (c *Client) UpdateIndexReplicas(ctx context.Context, indexName string, numberOfReplicas int32) error {
+func (c *Client) UpdateIndexReplicas(ctx context.Context, indexName string, numberOfReplicas int32) (err error) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if err != nil {
+			labelResult = "error"
+		}
+		metrics.OpenSearchOperationsTotal.WithLabelValues("update_replicas", labelResult).Inc()
+		metrics.OpenSearchOperationDuration.WithLabelValues("update_replicas").Observe(time.Since(start).Seconds())
+	}()
 	bodyJSON := fmt.Sprintf(`{"index":{"number_of_replicas":%d}}`, numberOfReplicas)
-	_, err := c.api.Indices.Settings.Put(ctx, opensearchapi.SettingsPutReq{
+	_, err = c.api.Indices.Settings.Put(ctx, opensearchapi.SettingsPutReq{
 		Indices: []string{indexName},
 		Body:    strings.NewReader(bodyJSON),
 	})
@@ -293,7 +314,16 @@ func (c *Client) IndexExists(ctx context.Context, indexName string) (bool, error
 }
 
 // DeleteIndex deletes an index
-func (c *Client) DeleteIndex(ctx context.Context, indexName string) error {
+func (c *Client) DeleteIndex(ctx context.Context, indexName string) (err error) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if err != nil {
+			labelResult = "error"
+		}
+		metrics.OpenSearchOperationsTotal.WithLabelValues("delete_index", labelResult).Inc()
+		metrics.OpenSearchOperationDuration.WithLabelValues("delete_index").Observe(time.Since(start).Seconds())
+	}()
 	log := logger.LoadLoggerFromContext(ctx)
 
 	exists, err := c.IndexExists(ctx, indexName)
@@ -318,7 +348,16 @@ func (c *Client) DeleteIndex(ctx context.Context, indexName string) error {
 }
 
 // IndexDocument indexes a document
-func (c *Client) IndexDocument(ctx context.Context, indexName, docID string, document interface{}) error {
+func (c *Client) IndexDocument(ctx context.Context, indexName, docID string, document interface{}) (err error) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if err != nil {
+			labelResult = "error"
+		}
+		metrics.OpenSearchOperationsTotal.WithLabelValues("index_document", labelResult).Inc()
+		metrics.OpenSearchOperationDuration.WithLabelValues("index_document").Observe(time.Since(start).Seconds())
+	}()
 	log := logger.LoadLoggerFromContext(ctx)
 
 	resp, err := c.api.Index(
@@ -346,7 +385,16 @@ func (c *Client) IndexDocument(ctx context.Context, indexName, docID string, doc
 }
 
 // DeleteDocument deletes a document
-func (c *Client) DeleteDocument(ctx context.Context, indexName, docID string) error {
+func (c *Client) DeleteDocument(ctx context.Context, indexName, docID string) (err error) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if err != nil {
+			labelResult = "error"
+		}
+		metrics.OpenSearchOperationsTotal.WithLabelValues("delete_document", labelResult).Inc()
+		metrics.OpenSearchOperationDuration.WithLabelValues("delete_document").Observe(time.Since(start).Seconds())
+	}()
 	log := logger.LoadLoggerFromContext(ctx)
 
 	resp, err := c.api.Document.Delete(ctx, opensearchapi.DocumentDeleteReq{

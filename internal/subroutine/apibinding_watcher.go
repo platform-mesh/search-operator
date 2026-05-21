@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	kcpapisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/runtimeobject"
@@ -20,6 +21,7 @@ import (
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
+	"github.com/platform-mesh/search-operator/internal/metrics"
 )
 
 // apiBindingWatcherSubroutine watches APIBinding resources across workspaces.
@@ -62,7 +64,16 @@ func (s *apiBindingWatcherSubroutine) Finalizers(_ runtimeobject.RuntimeObject) 
 // Process ensures that a SearchIndex exists in the org workspace for each bound
 // APIBinding, with DefaultFields populated from the top-level fields of all bound
 // APIResourceSchemas.
-func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
+func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (result ctrl.Result, opErr errors.OperatorError) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if opErr != nil {
+			labelResult = "error"
+		}
+		metrics.SubroutineTotal.WithLabelValues(s.GetName(), labelResult).Inc()
+		metrics.SubroutineDuration.WithLabelValues(s.GetName()).Observe(time.Since(start).Seconds())
+	}()
 	log := logger.LoadLoggerFromContext(ctx)
 	binding := instance.(*kcpapisv1alpha1.APIBinding)
 

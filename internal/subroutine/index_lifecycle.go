@@ -17,7 +17,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
-
+	"github.com/platform-mesh/search-operator/internal/metrics"
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 )
 
@@ -69,7 +69,16 @@ func (s *IndexLifecycleSubroutine) Finalizers(instance runtimeobject.RuntimeObje
 }
 
 // Process handles the reconciliation logic
-func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
+func (s *IndexLifecycleSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (result ctrl.Result, opErr errors.OperatorError) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if opErr != nil {
+			labelResult = "error"
+		}
+		metrics.SubroutineTotal.WithLabelValues(s.GetName(), labelResult).Inc()
+		metrics.SubroutineDuration.WithLabelValues(s.GetName()).Observe(time.Since(start).Seconds())
+	}()
 	log := logger.LoadLoggerFromContext(ctx)
 	searchIndex, ok := instance.(*v1alpha1.SearchIndex)
 	if !ok {
