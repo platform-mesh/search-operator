@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"testing"
 
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -15,54 +14,69 @@ import (
 
 func TestSearchIndexFieldCollectorDerivesDefaultSemanticAndFilterableFields(t *testing.T) {
 	collector := newSearchIndexFieldCollector()
-	collector.addSchema(&apiextensionsv1.JSONSchemaProps{
-		Properties: map[string]apiextensionsv1.JSONSchemaProps{
-			"apiVersion":  {Type: "string"},
-			"certificate": {Type: "string"},
-			"clientCrt":   {Type: "string"},
-			"description": {Type: "string"},
-			"kind":        {Type: "string"},
-			"password":    {Type: "string"},
-			"spec": {
-				Type: "object",
-				Properties: map[string]apiextensionsv1.JSONSchemaProps{
-					"description": {Type: "string"},
-					"displayName": {Type: "string"},
-					"region":      {Type: "string"},
-					"tier":        {Type: "string"},
-					"createdAt":   {Type: "string", Format: "date-time"},
-					"replicas":    {Type: "integer"},
-					"settings": {
-						Type: "object",
-						Properties: map[string]apiextensionsv1.JSONSchemaProps{
-							"class": {Type: "string"},
-						},
-					},
-				},
-			},
-			"status": {
-				Type: "object",
-				Properties: map[string]apiextensionsv1.JSONSchemaProps{
-					"summary": {Type: "string"},
-					"phase":   {Type: "string"},
-				},
-			},
+	collector.addFields([]schemaSearchIndexField{
+		{Path: "apiVersion", Type: "string"},
+		{Path: "certificate", Type: "string"},
+		{Path: "clientCrt", Type: "string"},
+		{Path: "description", Type: "string"},
+		{Path: "kind", Type: "string"},
+		{Path: "password", Type: "string"},
+		{Path: "spec.description", Type: "string"},
+		{Path: "spec.replicas", Type: "integer"},
+		{Path: "spec.settings.class", Type: "string"},
+		{Path: "status.phase", Type: "string"},
+	})
+
+	got := collector.fields()
+
+	wantDefault := []string{"apiVersion", "description", "kind", "spec.description", "spec.replicas", "spec.settings.class", "status.phase"}
+	if !reflect.DeepEqual(got.DefaultFields, wantDefault) {
+		t.Fatalf("DefaultFields = %v, want %v", got.DefaultFields, wantDefault)
+	}
+
+	wantSemantic := []string{"apiVersion", "description", "kind", "spec.description", "spec.settings.class", "status.phase"}
+	if !reflect.DeepEqual(got.SemanticFields, wantSemantic) {
+		t.Fatalf("SemanticFields = %v, want %v", got.SemanticFields, wantSemantic)
+	}
+
+	wantFilterable := []string{"apiVersion", "description", "kind", "spec.description", "spec.replicas", "spec.settings.class", "status.phase"}
+	if !reflect.DeepEqual(got.FilterableFields, wantFilterable) {
+		t.Fatalf("FilterableFields = %v, want %v", got.FilterableFields, wantFilterable)
+	}
+}
+
+func TestSearchIndexFieldCollectorAppliesSearchConfig(t *testing.T) {
+	collector := newSearchIndexFieldCollector()
+	collector.addSearchConfig([]schemaSearchIndexField{
+		{Path: "apiVersion", Type: "string"},
+		{Path: "kind", Type: "string"},
+		{Path: "spec.automation.enabled", Type: "boolean"},
+		{Path: "spec.componentType", Type: "string"},
+		{Path: "spec.description", Type: "string"},
+		{Path: "spec.displayName", Type: "string"},
+		{Path: "spec.id", Type: "string"},
+		{Path: "status.phase", Type: "string"},
+	}, &v1alpha1.SearchConfig{
+		Spec: v1alpha1.SearchConfigSpec{
+			ExcludedFields: []string{"spec.automation", "status"},
+			SemanticFields: []string{"spec.displayName", "spec.description", "spec.longDescription"},
+			ExactFields:    []string{"spec.id"},
 		},
 	})
 
 	got := collector.fields()
 
-	wantDefault := []string{"apiVersion", "description", "kind", "spec", "status"}
+	wantDefault := []string{"apiVersion", "kind", "spec.componentType"}
 	if !reflect.DeepEqual(got.DefaultFields, wantDefault) {
 		t.Fatalf("DefaultFields = %v, want %v", got.DefaultFields, wantDefault)
 	}
 
-	wantSemantic := []string{"apiVersion", "description", "kind"}
+	wantSemantic := []string{"spec.description", "spec.displayName", "spec.longDescription"}
 	if !reflect.DeepEqual(got.SemanticFields, wantSemantic) {
 		t.Fatalf("SemanticFields = %v, want %v", got.SemanticFields, wantSemantic)
 	}
 
-	wantFilterable := []string{"apiVersion", "description", "kind", "spec", "status"}
+	wantFilterable := []string{"spec.id"}
 	if !reflect.DeepEqual(got.FilterableFields, wantFilterable) {
 		t.Fatalf("FilterableFields = %v, want %v", got.FilterableFields, wantFilterable)
 	}

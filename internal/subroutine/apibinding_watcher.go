@@ -65,8 +65,8 @@ func (s *apiBindingWatcherSubroutine) Finalizers(_ runtimeobject.RuntimeObject) 
 }
 
 // Process ensures that a SearchIndex exists in the provider workspace for each bound
-// APIBinding, with DefaultFields populated from the top-level fields of all bound
-// APIResourceSchemas.
+// APIBinding. Field lists are derived from the provider workspace schemas and
+// optional SearchConfig resources.
 func (s *apiBindingWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
 	log := logger.LoadLoggerFromContext(ctx)
 	binding := instance.(*kcpapisv1alpha1.APIBinding)
@@ -126,7 +126,9 @@ type searchIndexFields struct {
 var excludedSearchIndexFieldNames = []string{"password", "certificate", "crt", "cert"}
 
 // resolveSearchIndexFields collects indexed field metadata from every APIResourceSchema
-// referenced by the binding. Fields are returned uniquely in sorted order.
+// referenced by the binding. If a matching SearchConfig exists in the provider
+// workspace, it classifies fields explicitly; otherwise schema types drive the
+// fallback field classification.
 func (s *apiBindingWatcherSubroutine) resolveSearchIndexFields(ctx context.Context, binding *kcpapisv1alpha1.APIBinding) (searchIndexFields, error) {
 	if len(binding.Status.BoundResources) == 0 {
 		return searchIndexFields{}, nil
@@ -148,22 +150,96 @@ func (s *apiBindingWatcherSubroutine) resolveSearchIndexFields(ctx context.Conte
 			return searchIndexFields{}, fmt.Errorf("get APIResourceSchema %q: %w", br.Schema.Name, err)
 		}
 
-		for _, version := range schema.Spec.Versions {
-			if !version.Served {
-				continue
-			}
-			props, err := version.GetSchema()
-			if err != nil {
-				return searchIndexFields{}, fmt.Errorf("parse schema for %q version %q: %w", br.Schema.Name, version.Name, err)
-			}
-			if props == nil {
-				continue
-			}
-			collector.addSchema(props)
+		schemaFields, err := schemaSearchIndexFields(schema)
+		if err != nil {
+			return searchIndexFields{}, err
 		}
+
+		searchConfig := s.fetchSearchConfig(ctx, exportClient, br.Schema.Name)
+		if searchConfig == nil {
+			collector.addFields(schemaFields)
+			continue
+		}
+
+		collector.addSearchConfig(schemaFields, searchConfig)
 	}
 
 	return collector.fields(), nil
+}
+
+func (s *apiBindingWatcherSubroutine) fetchSearchConfig(ctx context.Context, exportClient client.Client, schemaName string) *v1alpha1.SearchConfig {
+	log := logger.LoadLoggerFromContext(ctx)
+	cfg := &v1alpha1.SearchConfig{}
+	err := exportClient.Get(ctx, types.NamespacedName{Name: schemaName}, cfg)
+	if err == nil {
+		log.Debug().
+			Str("searchConfig", cfg.Name).
+			Str("schema", schemaName).
+			Msg("found SearchConfig in provider workspace")
+		return cfg
+	}
+	if !apierrors.IsNotFound(err) {
+		log.Warn().Err(err).
+			Str("schema", schemaName).
+			Msg("error fetching SearchConfig from provider workspace, falling back to schema-derived fields")
+	}
+	return nil
+}
+
+func schemaSearchIndexFields(schema *kcpapisv1alpha1.APIResourceSchema) ([]schemaSearchIndexField, error) {
+	fieldsByPath := make(map[string]schemaSearchIndexField)
+	for _, version := range schema.Spec.Versions {
+		if !version.Served {
+			continue
+		}
+		props, err := version.GetSchema()
+		if err != nil {
+			return nil, fmt.Errorf("parse schema for %q version %q: %w", schema.Name, version.Name, err)
+		}
+		collectSchemaSearchIndexFields("", props, fieldsByPath)
+	}
+
+	fields := make([]schemaSearchIndexField, 0, len(fieldsByPath))
+	for _, field := range fieldsByPath {
+		fields = append(fields, field)
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		return fields[i].Path < fields[j].Path
+	})
+	return fields, nil
+}
+
+type schemaSearchIndexField struct {
+	Path string
+	Type string
+}
+
+func collectSchemaSearchIndexFields(prefix string, schema *apiextensionsv1.JSONSchemaProps, fields map[string]schemaSearchIndexField) {
+	if schema == nil {
+		return
+	}
+
+	if len(schema.Properties) == 0 {
+		if prefix != "" && !isExcludedSearchIndexField(prefix) {
+			fields[prefix] = schemaSearchIndexField{Path: prefix, Type: schema.Type}
+		}
+		return
+	}
+
+	for fieldName, fieldSchema := range schema.Properties {
+		fieldPath := fieldName
+		if prefix != "" {
+			fieldPath = prefix + "." + fieldName
+		}
+		if isExcludedSearchIndexField(fieldPath) {
+			continue
+		}
+		if fieldSchema.Type == "object" && len(fieldSchema.Properties) > 0 {
+			collectSchemaSearchIndexFields(fieldPath, &fieldSchema, fields)
+			continue
+		}
+		fields[fieldPath] = schemaSearchIndexField{Path: fieldPath, Type: fieldSchema.Type}
+	}
 }
 
 // ensureSearchIndex creates or updates the SearchIndex in the provider workspace.
@@ -259,20 +335,48 @@ func newSearchIndexFieldCollector() *searchIndexFieldCollector {
 	}
 }
 
-func (c *searchIndexFieldCollector) addSchema(schema *apiextensionsv1.JSONSchemaProps) {
-	if schema == nil {
-		return
-	}
-
-	for fieldName, fieldSchema := range schema.Properties {
-		if isExcludedSearchIndexField(fieldName) {
+func (c *searchIndexFieldCollector) addFields(fields []schemaSearchIndexField) {
+	for _, field := range fields {
+		if isExcludedSearchIndexField(field.Path) {
 			continue
 		}
 
-		c.defaultFields[fieldName] = struct{}{}
-		c.filterableFields[fieldName] = struct{}{}
-		if fieldSchema.Type == "string" {
-			c.semanticFields[fieldName] = struct{}{}
+		c.defaultFields[field.Path] = struct{}{}
+		if isFilterableSchemaType(field.Type) {
+			c.filterableFields[field.Path] = struct{}{}
+		}
+		if field.Type == "string" {
+			c.semanticFields[field.Path] = struct{}{}
+		}
+	}
+}
+
+func (c *searchIndexFieldCollector) addSearchConfig(fields []schemaSearchIndexField, cfg *v1alpha1.SearchConfig) {
+	excluded := normalizedFieldSet(cfg.Spec.ExcludedFields)
+	semantic := normalizedFieldSet(cfg.Spec.SemanticFields)
+	exact := normalizedFieldSet(cfg.Spec.ExactFields)
+
+	for _, field := range fields {
+		switch {
+		case isConfiguredFieldExcluded(field.Path, excluded):
+			continue
+		case exact[field.Path]:
+			c.filterableFields[field.Path] = struct{}{}
+		case semantic[field.Path]:
+			c.semanticFields[field.Path] = struct{}{}
+		default:
+			c.defaultFields[field.Path] = struct{}{}
+		}
+	}
+
+	for field := range semantic {
+		if !isConfiguredFieldExcluded(field, excluded) {
+			c.semanticFields[field] = struct{}{}
+		}
+	}
+	for field := range exact {
+		if !isConfiguredFieldExcluded(field, excluded) {
+			c.filterableFields[field] = struct{}{}
 		}
 	}
 }
@@ -292,6 +396,39 @@ func sortedFieldNames(fields map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func normalizedFieldSet(fields []string) map[string]bool {
+	out := make(map[string]bool, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		out[field] = true
+	}
+	return out
+}
+
+func isConfiguredFieldExcluded(field string, excluded map[string]bool) bool {
+	if excluded[field] {
+		return true
+	}
+	for excludedField := range excluded {
+		if strings.HasPrefix(field, excludedField+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func isFilterableSchemaType(schemaType string) bool {
+	switch schemaType {
+	case "string", "boolean", "integer", "number", "array":
+		return true
+	default:
+		return false
+	}
 }
 
 func isExcludedSearchIndexField(fieldName string) bool {

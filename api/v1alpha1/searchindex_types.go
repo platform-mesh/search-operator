@@ -73,7 +73,7 @@ func (s *SearchIndex) SetConditions(conditions []metav1.Condition) {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,path=searchindexes,singular=searchindex
 // +kubebuilder:printcolumn:name="Index",type=string,JSONPath=`.status.indexName`
 // +kubebuilder:printcolumn:name="Documents",type=integer,JSONPath=`.status.documentCount`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

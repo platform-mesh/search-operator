@@ -61,6 +61,7 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, indexP
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apiexports,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apiresourceschemas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core.platform-mesh.io,resources=accountinfos,verbs=get;list;watch
+// +kubebuilder:rbac:groups=search.platform-mesh.io,resources=searchconfigs,verbs=get;list;watch
 
 // Reconcile handles APIBinding reconciliation
 func (r *APIBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
