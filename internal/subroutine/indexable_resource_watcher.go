@@ -32,31 +32,33 @@ import (
 
 // IndexableResourceWatcherSubroutine watches IndexableResource resources across workspaces
 type IndexableResourceWatcherSubroutine struct {
-	mgr           mcmanager.Manager
-	allClient     client.Client
-	orgsClient    client.Client // scoped to root:orgs for Workspace lookups
-	osClient      *opensearch.Client
-	apiExportName string
-	indexPrefix   string
-	rootCfg       *rest.Config // base KCP REST config (path stripped) for workspace-scoped clients
+	mgr               mcmanager.Manager
+	allClient         client.Client
+	orgsClient        client.Client // scoped to root:orgs for Workspace lookups and legacy SearchIndex fallback
+	searchIndexClient client.Client // scoped to the provider workspace where SearchIndex config resources live
+	osClient          *opensearch.Client
+	apiExportName     string
+	indexPrefix       string
+	rootCfg           *rest.Config // base KCP REST config (path stripped) for workspace-scoped clients
 }
 
 // NewIndexableResourceWatcherSubroutine creates a new IndexableResource watcher subroutine.
 // localCfg must be the admin KCP REST config
-func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, osClient *opensearch.Client, apiExportName string, indexPrefix string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
+func NewIndexableResourceWatcherSubroutine(mgr mcmanager.Manager, allClient client.Client, orgsClient client.Client, searchIndexClient client.Client, osClient *opensearch.Client, apiExportName string, indexPrefix string, localCfg *rest.Config) (*IndexableResourceWatcherSubroutine, error) {
 	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &IndexableResourceWatcherSubroutine{
-		mgr:           mgr,
-		allClient:     allClient,
-		orgsClient:    orgsClient,
-		osClient:      osClient,
-		apiExportName: apiExportName,
-		indexPrefix:   indexPrefix,
-		rootCfg:       rootCfg,
+		mgr:               mgr,
+		allClient:         allClient,
+		orgsClient:        orgsClient,
+		searchIndexClient: searchIndexClient,
+		osClient:          osClient,
+		apiExportName:     apiExportName,
+		indexPrefix:       indexPrefix,
+		rootCfg:           rootCfg,
 	}, nil
 }
 
@@ -109,7 +111,7 @@ func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instan
 	}
 	pluralResource := m.Resource.Resource
 
-	searchIndex, err := getSearchIndex(ctx, s.orgsClient, orgID, pluralResource, s.indexPrefix)
+	searchIndex, err := getSearchIndex(ctx, s.searchIndexClient, s.orgsClient, orgID, pluralResource, s.indexPrefix)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -271,11 +273,17 @@ func (s *IndexableResourceWatcherSubroutine) getAccountInfo(ctx context.Context,
 	return nil, nil
 }
 
-func getSearchIndex(ctx context.Context, orgsClient client.Client, orgID string, pluralResource string, indexPrefix string) (*v1alpha1.SearchIndex, error) {
+func getSearchIndex(ctx context.Context, searchIndexClient client.Client, legacySearchIndexClient client.Client, orgID string, pluralResource string, indexPrefix string) (*v1alpha1.SearchIndex, error) {
 	searchIndex := &v1alpha1.SearchIndex{}
 	name := buildCanonicalIndexName(indexPrefix, orgID, pluralResource)
-	if err := orgsClient.Get(ctx, types.NamespacedName{Name: name}, searchIndex); err != nil {
-		return nil, fmt.Errorf("failed to get SearchIndex %q: %w", name, err)
+	if err := searchIndexClient.Get(ctx, types.NamespacedName{Name: name}, searchIndex); err == nil {
+		return searchIndex, nil
+	} else if !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("failed to get SearchIndex %q from provider workspace: %w", name, err)
+	}
+
+	if err := legacySearchIndexClient.Get(ctx, types.NamespacedName{Name: name}, searchIndex); err != nil {
+		return nil, fmt.Errorf("failed to get SearchIndex %q from provider workspace or legacy root:orgs fallback: %w", name, err)
 	}
 	return searchIndex, nil
 }
@@ -549,7 +557,7 @@ func (s *IndexableResourceWatcherSubroutine) Finalize(ctx context.Context, insta
 	}
 	pluralResource := m.Resource.Resource
 
-	searchIndex, err := getSearchIndex(ctx, s.orgsClient, orgID, pluralResource, s.indexPrefix)
+	searchIndex, err := getSearchIndex(ctx, s.searchIndexClient, s.orgsClient, orgID, pluralResource, s.indexPrefix)
 	if err != nil {
 		log.Debug().Err(err).Msg("could not get SearchIndex, requeuing")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil

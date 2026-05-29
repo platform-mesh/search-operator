@@ -250,6 +250,23 @@ func (s *IndexLifecycleSubroutine) Finalize(ctx context.Context, instance runtim
 
 func (s *IndexLifecycleSubroutine) ensureSearchIndexMetadata(ctx context.Context, si *v1alpha1.SearchIndex, orgClusterID string) error {
 	original := si.DeepCopy()
+	if !applySearchIndexOrgMetadata(si, orgClusterID) {
+		return nil
+	}
+
+	cluster, err := s.mgr.ClusterFromContext(ctx)
+	if err != nil {
+		return fmt.Errorf("get cluster from context: %w", err)
+	}
+
+	if err := cluster.GetClient().Patch(ctx, si, client.MergeFrom(original)); err != nil {
+		return fmt.Errorf("patch SearchIndex metadata: %w", err)
+	}
+
+	return nil
+}
+
+func applySearchIndexOrgMetadata(si *v1alpha1.SearchIndex, orgClusterID string) bool {
 	changed := false
 
 	if si.Labels == nil {
@@ -268,20 +285,7 @@ func (s *IndexLifecycleSubroutine) ensureSearchIndexMetadata(ctx context.Context
 		changed = true
 	}
 
-	if !changed {
-		return nil
-	}
-
-	cluster, err := s.mgr.ClusterFromContext(ctx)
-	if err != nil {
-		return fmt.Errorf("get cluster from context: %w", err)
-	}
-
-	if err := cluster.GetClient().Patch(ctx, si, client.MergeFrom(original)); err != nil {
-		return fmt.Errorf("patch SearchIndex metadata: %w", err)
-	}
-
-	return nil
+	return changed
 }
 
 func buildIndexAliases(staticPrefix, organizationClusterID, canonicalIndexName string) []string {
