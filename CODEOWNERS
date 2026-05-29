@@ -1,0 +1,3 @@
+* @platform-mesh/frame @platform-mesh/tsc @platform-mesh/go-approvers @platform-mesh/kube
+go.mod
+go.sum
