@@ -26,26 +26,29 @@ import (
 // When a binding takes place in an org then all indexes are updated for the
 // fields contained in the bound APIResourceSchemas.
 type apiBindingWatcherSubroutine struct {
-	mgr         mcmanager.Manager
-	orgsClient  client.Client // scoped to root:orgs for Workspace lookups
-	rootCfg     *rest.Config  // clean base KCP REST config (no path) for building workspace clients
-	indexPrefix string
+	mgr                mcmanager.Manager
+	orgsClient         client.Client // scoped to root:orgs for Workspace lookups
+	searchConfigClient client.Client // scoped to the provider workspace where SearchConfig resources live
+	rootCfg            *rest.Config  // clean base KCP REST config (no path) for building workspace clients
+	indexPrefix        string
 }
 
 // NewAPIBindingWatcherSubroutine creates a new APIBinding watcher subroutine.
 // orgsClient must be scoped to the root:orgs workspace.
+// searchConfigClient must be scoped to the provider workspace.
 // localCfg must be the admin KCP REST config.
-func NewAPIBindingWatcherSubroutine(mgr mcmanager.Manager, orgsClient client.Client, localCfg *rest.Config, indexPrefix string) (*apiBindingWatcherSubroutine, error) {
+func NewAPIBindingWatcherSubroutine(mgr mcmanager.Manager, orgsClient client.Client, searchConfigClient client.Client, localCfg *rest.Config, indexPrefix string) (*apiBindingWatcherSubroutine, error) {
 	rootCfg, err := stripPathFromConfig(localCfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &apiBindingWatcherSubroutine{
-		mgr:         mgr,
-		orgsClient:  orgsClient,
-		rootCfg:     rootCfg,
-		indexPrefix: indexPrefix,
+		mgr:                mgr,
+		orgsClient:         orgsClient,
+		searchConfigClient: searchConfigClient,
+		rootCfg:            rootCfg,
+		indexPrefix:        indexPrefix,
 	}, nil
 }
 
@@ -120,7 +123,7 @@ type searchIndexFields struct {
 }
 
 // resolveFieldsForBinding collects the top-level field names from every APIResourceSchema
-// referenced by the binding, then applies any SearchConfig found in the provider workspace
+// referenced by the binding, then applies any SearchConfig found in the operator provider workspace
 // to classify fields into default, semantic, and filterable lists.
 func (s *apiBindingWatcherSubroutine) resolveFieldsForBinding(ctx context.Context, binding *kcpapisv1alpha1.APIBinding) (*searchIndexFields, error) {
 	if len(binding.Status.BoundResources) == 0 {
@@ -166,8 +169,8 @@ func (s *apiBindingWatcherSubroutine) resolveFieldsForBinding(ctx context.Contex
 	}
 	sort.Strings(allFields)
 
-	// Try to fetch a SearchConfig from the provider workspace to classify fields.
-	searchConfig := s.fetchSearchConfig(ctx, exportClient, binding)
+	// Try to fetch a SearchConfig from the operator provider workspace to classify fields.
+	searchConfig := s.fetchSearchConfig(ctx, binding)
 	if searchConfig == nil {
 		// No SearchConfig found — fall back to all fields as defaultFields (heuristic).
 		return &searchIndexFields{defaultFields: allFields}, nil
@@ -176,26 +179,26 @@ func (s *apiBindingWatcherSubroutine) resolveFieldsForBinding(ctx context.Contex
 	return applySearchConfig(allFields, searchConfig), nil
 }
 
-// fetchSearchConfig attempts to load a SearchConfig from the provider workspace.
+// fetchSearchConfig attempts to load a SearchConfig from the operator provider workspace.
 // It looks for a SearchConfig whose name matches any bound resource schema name.
 // Returns nil if no SearchConfig is found.
-func (s *apiBindingWatcherSubroutine) fetchSearchConfig(ctx context.Context, exportClient client.Client, binding *kcpapisv1alpha1.APIBinding) *v1alpha1.SearchConfig {
+func (s *apiBindingWatcherSubroutine) fetchSearchConfig(ctx context.Context, binding *kcpapisv1alpha1.APIBinding) *v1alpha1.SearchConfig {
 	log := logger.LoadLoggerFromContext(ctx)
 
 	for _, br := range binding.Status.BoundResources {
 		cfg := &v1alpha1.SearchConfig{}
-		err := exportClient.Get(ctx, types.NamespacedName{Name: br.Schema.Name}, cfg)
+		err := s.searchConfigClient.Get(ctx, types.NamespacedName{Name: br.Schema.Name}, cfg)
 		if err == nil {
 			log.Debug().
 				Str("searchConfig", cfg.Name).
 				Str("schema", br.Schema.Name).
-				Msg("found SearchConfig in provider workspace")
+				Msg("found SearchConfig in operator provider workspace")
 			return cfg
 		}
 		if !apierrors.IsNotFound(err) {
 			log.Warn().Err(err).
 				Str("schema", br.Schema.Name).
-				Msg("error fetching SearchConfig from provider workspace, falling back to heuristic")
+				Msg("error fetching SearchConfig from operator provider workspace, falling back to heuristic")
 		}
 	}
 	return nil
