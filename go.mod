@@ -9,7 +9,7 @@ require (
 	github.com/openfga/api/proto v0.0.0-20260319214821-f153694bfc20
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 	github.com/platform-mesh/account-operator v0.14.57
-	github.com/platform-mesh/golang-commons v0.17.9
+	github.com/platform-mesh/golang-commons v0.17.10
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	github.com/vrischmann/envconfig v1.4.1
@@ -76,7 +76,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.27.1 // indirect
+	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/net v0.55.0 // indirect
