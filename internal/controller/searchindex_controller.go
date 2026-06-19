@@ -14,7 +14,6 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
-
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 	"github.com/platform-mesh/search-operator/internal/subroutine"
 )

@@ -29,6 +29,7 @@ import (
 	accountv1alpha1 "github.com/platform-mesh/account-operator/api/v1alpha1"
 
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
+	"github.com/platform-mesh/search-operator/internal/metrics"
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 )
 
@@ -78,7 +79,16 @@ func (s *IndexableResourceWatcherSubroutine) Finalizers(_ runtimeobject.RuntimeO
 	return []string{indexableResourceFinalizer}
 }
 
-func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (ctrl.Result, errors.OperatorError) {
+func (s *IndexableResourceWatcherSubroutine) Process(ctx context.Context, instance runtimeobject.RuntimeObject) (result ctrl.Result, opErr errors.OperatorError) {
+	start := time.Now()
+	defer func() {
+		labelResult := "success"
+		if opErr != nil {
+			labelResult = "error"
+		}
+		metrics.SubroutineTotal.WithLabelValues(s.GetName(), labelResult).Inc()
+		metrics.SubroutineDuration.WithLabelValues(s.GetName()).Observe(time.Since(start).Seconds())
+	}()
 	log := logger.LoadLoggerFromContext(ctx)
 	resource := instance.(*unstructured.Unstructured)
 
