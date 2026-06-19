@@ -1,0 +1,10 @@
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIExport
+metadata:
+  creationTimestamp: null
+  name: search.platform-mesh.io
+spec:
+  latestResourceSchemas:
+  - v260529-e3b5e6c.searchconfigs.search.platform-mesh.io
+  - v260529-e3b5e6c.searchindexes.search.platform-mesh.io
+status: {}

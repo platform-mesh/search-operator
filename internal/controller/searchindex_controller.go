@@ -3,12 +3,15 @@ package controller
 import (
 	"context"
 
+	"github.com/platform-mesh/golang-commons/controller/filter"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/builder"
 	"github.com/platform-mesh/golang-commons/controller/lifecycle/multicluster"
 	lifecyclesubroutine "github.com/platform-mesh/golang-commons/controller/lifecycle/subroutine"
 	"github.com/platform-mesh/golang-commons/logger"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -56,5 +59,19 @@ func (r *SearchIndexReconciler) Reconcile(ctx context.Context, req mcreconcile.R
 
 // SetupWithManager sets up the controller with the multicluster Manager.
 func (r *SearchIndexReconciler) SetupWithManager(mgr mcmanager.Manager, maxConcurrentReconciles int, evp ...predicate.Predicate) error {
-	return r.mclifecycle.SetupWithManager(mgr, maxConcurrentReconciles, "searchindex", &v1alpha1.SearchIndex{}, "", r, r.log, evp...)
+	eventPredicates := append([]predicate.Predicate{filter.DebugResourcesBehaviourPredicate("")}, evp...)
+	opts := controller.TypedOptions[mcreconcile.Request]{
+		MaxConcurrentReconciles: maxConcurrentReconciles,
+	}
+
+	return mcbuilder.ControllerManagedBy(mgr).
+		Named("searchindex").
+		For(
+			&v1alpha1.SearchIndex{},
+			mcbuilder.WithEngageWithLocalCluster(true),
+			mcbuilder.WithEngageWithProviderClusters(true),
+		).
+		WithOptions(opts).
+		WithEventFilter(predicate.And(eventPredicates...)).
+		Complete(r)
 }

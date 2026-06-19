@@ -1,8 +1,6 @@
 package subroutine
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,61 +10,6 @@ import (
 	"github.com/platform-mesh/search-operator/api/v1alpha1"
 	"github.com/platform-mesh/search-operator/internal/opensearch"
 )
-
-func TestBuildPayloadSeparatesRawJSONFromText(t *testing.T) {
-	resource := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "core.platform-mesh.io/v1alpha1",
-			"kind":       "Component",
-			"metadata": map[string]any{
-				"name":          "my-component",
-				"namespace":     "default",
-				"uid":           "abc-123-def",
-				"managedFields": []any{map[string]any{"manager": "kubectl"}},
-				"labels": map[string]any{
-					"app": "frontend",
-				},
-			},
-			"spec": map[string]any{
-				"replicas": float64(3),
-				"image":    "nginx:latest",
-				"enabled":  true,
-			},
-		},
-	}
-
-	rawJSON, text, err := buildPayload(resource)
-	if err != nil {
-		t.Fatalf("buildPayload returned error: %v", err)
-	}
-
-	// rawJSON must be valid JSON
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil {
-		t.Fatalf("rawJSON is not valid JSON: %v", err)
-	}
-
-	// rawJSON should NOT contain managedFields
-	if strings.Contains(rawJSON, "managedFields") {
-		t.Fatal("rawJSON should not contain managedFields")
-	}
-
-	// text should be YAML (contains colons and indentation, no braces for the whole object)
-	if !strings.Contains(text, "kind: Component") {
-		t.Error("text should contain 'kind: Component'")
-	}
-	if !strings.Contains(text, "replicas: 3") {
-		t.Error("text should contain 'replicas: 3'")
-	}
-	if !strings.Contains(text, "image: nginx:latest") {
-		t.Error("text should contain 'image: nginx:latest'")
-	}
-
-	// text should NOT contain managedFields
-	if strings.Contains(text, "managedFields") {
-		t.Fatal("text should not contain managedFields")
-	}
-}
 
 func TestBuildFGAObjectName(t *testing.T) {
 	tests := []struct {
@@ -278,7 +221,7 @@ func TestResolveAccountInfoLookupClusters(t *testing.T) {
 	}
 }
 
-func TestExtractConfiguredFieldsSupportsNestedPaths(t *testing.T) {
+func TestExtractConfiguredFieldsSupportsDotNotation(t *testing.T) {
 	resource := &unstructured.Unstructured{
 		Object: map[string]any{
 			"description": "top-level description",
@@ -295,8 +238,53 @@ func TestExtractConfiguredFieldsSupportsNestedPaths(t *testing.T) {
 	if got["description"] != "top-level description" {
 		t.Fatalf("description = %v, want top-level description", got["description"])
 	}
-	if got["spec.summary"] != "nested summary" {
-		t.Fatalf("spec.summary = %v, want nested summary", got["spec.summary"])
+	spec, ok := got["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec = %T, want map[string]any", got["spec"])
+	}
+	if got := spec["summary"]; got != "nested summary" {
+		t.Fatalf("spec.summary = %v, want nested summary", got)
+	}
+}
+
+func TestExtractConfiguredFieldsAppliesTypeFilters(t *testing.T) {
+	resource := &unstructured.Unstructured{
+		Object: map[string]any{
+			"description": "top-level description",
+			"enabled":     true,
+			"replicas":    int64(3),
+			"tags":        []any{"frontend", "critical"},
+			"spec": map[string]any{
+				"region": "eu-de-1",
+			},
+		},
+	}
+
+	gotSemantic := extractStringConfiguredFields(resource, []string{"description", "enabled", "spec.region"})
+	if len(gotSemantic) != 2 || gotSemantic["description"] != "top-level description" {
+		t.Fatalf("extractStringConfiguredFields() = %v, want only description", gotSemantic)
+	}
+	semanticSpec := gotSemantic["spec"].(map[string]any)
+	if got := semanticSpec["region"]; got != "eu-de-1" {
+		t.Fatalf("extractStringConfiguredFields() spec.region = %v, want eu-de-1", got)
+	}
+
+	gotFilterable := extractFilterableFields(resource, []string{"description", "enabled", "replicas", "tags", "spec"})
+	if len(gotFilterable) != 4 {
+		t.Fatalf("extractFilterableFields() len = %d, want 4 (%v)", len(gotFilterable), gotFilterable)
+	}
+	if _, exists := gotFilterable["spec"]; exists {
+		t.Fatalf("extractFilterableFields() included spec object, want object skipped")
+	}
+	if got := gotFilterable["enabled"]; got != true {
+		t.Fatalf("extractFilterableFields() enabled = %v, want true", got)
+	}
+	if got := gotFilterable["replicas"]; got != int64(3) {
+		t.Fatalf("extractFilterableFields() replicas = %v, want 3", got)
+	}
+	tags, ok := gotFilterable["tags"].([]any)
+	if !ok || len(tags) != 2 || tags[0] != "frontend" || tags[1] != "critical" {
+		t.Fatalf("extractFilterableFields() tags = %v, want [frontend critical]", gotFilterable["tags"])
 	}
 }
 
@@ -308,25 +296,57 @@ func TestBuildDocumentSourceAddsConfiguredFields(t *testing.T) {
 		ClusterName:   "root:orgs:sap",
 		WorkspacePath: "root:orgs:sap:team-a",
 		UpdatedAt:     time.Unix(0, 0).UTC(),
+		DefaultFields: map[string]any{
+			"spec": map[string]any{
+				"summary": "nested summary",
+			},
+		},
+		SemanticFields: map[string]any{
+			"description": "top-level description",
+		},
+		FilterableFields: map[string]any{
+			"kind": "Component",
+		},
 	}
 
-	source, err := buildDocumentSource(doc, map[string]any{
-		"description":  "top-level description",
-		"spec.summary": "nested summary",
-	})
+	source, err := buildDocumentSource(doc)
 	if err != nil {
 		t.Fatalf("buildDocumentSource() returned error: %v", err)
 	}
 
-	if got := source["description"]; got != "top-level description" {
-		t.Fatalf("description = %v, want top-level description", got)
+	if _, exists := source["description"]; exists {
+		t.Fatalf("description was written at root, want semantic_fields.description")
 	}
 
-	spec, ok := source["spec"].(map[string]any)
+	semanticFields, ok := source["semantic_fields"].(map[string]any)
 	if !ok {
-		t.Fatalf("spec = %T, want map[string]any", source["spec"])
+		t.Fatalf("semantic_fields = %T, want map[string]any", source["semantic_fields"])
 	}
-	if got := spec["summary"]; got != "nested summary" {
-		t.Fatalf("spec.summary = %v, want nested summary", got)
+	if got := semanticFields["description"]; got != "top-level description" {
+		t.Fatalf("semantic_fields.description = %v, want top-level description", got)
+	}
+
+	filterableFields, ok := source["filterable_fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("filterable_fields = %T, want map[string]any", source["filterable_fields"])
+	}
+	if got := filterableFields["kind"]; got != "Component" {
+		t.Fatalf("filterable_fields.kind = %v, want Component", got)
+	}
+
+	defaultFields, ok := source["default_fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("default_fields = %T, want map[string]any", source["default_fields"])
+	}
+	defaultSpec := defaultFields["spec"].(map[string]any)
+	if got := defaultSpec["summary"]; got != "nested summary" {
+		t.Fatalf("default_fields.spec.summary = %v, want nested summary", got)
+	}
+
+	if _, exists := source["payload_raw_json"]; exists {
+		t.Fatalf("payload_raw_json was indexed, want no raw payload")
+	}
+	if _, exists := source["payload_text"]; exists {
+		t.Fatalf("payload_text was indexed, want no text payload")
 	}
 }

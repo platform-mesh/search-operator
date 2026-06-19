@@ -46,8 +46,13 @@ func NewIndexableResource(log *logger.Logger, cfg config.Config, mcMgr mcmanager
 		return nil, err
 	}
 
+	searchIndexClient, err := client.New(localMgr.GetConfig(), client.Options{Scheme: localMgr.GetScheme()})
+	if err != nil {
+		return nil, fmt.Errorf("create provider workspace SearchIndex client: %w", err)
+	}
+
 	// Build subroutines list
-	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, osClient, apiExportName, cfg.OpenSearch.IndexNamePrefix, localMgr.GetConfig())
+	watcherSubroutine, err := subroutine.NewIndexableResourceWatcherSubroutine(mcMgr, allClient, orgsClient, searchIndexClient, osClient, apiExportName, cfg.OpenSearch.IndexNamePrefix, localMgr.GetConfig())
 	if err != nil {
 		return nil, fmt.Errorf("create IndexableResourceWatcherSubroutine: %w", err)
 	}

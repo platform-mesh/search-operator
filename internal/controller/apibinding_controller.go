@@ -39,7 +39,12 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, indexP
 		return nil, fmt.Errorf("create root:orgs scoped client: %w", err)
 	}
 
-	watcherSubroutine, err := subroutine.NewAPIBindingWatcherSubroutine(mcMgr, orgsClient, localMgr.GetConfig(), indexPrefix)
+	searchIndexClient, err := client.New(localMgr.GetConfig(), client.Options{Scheme: localMgr.GetScheme()})
+	if err != nil {
+		return nil, fmt.Errorf("create provider workspace SearchIndex client: %w", err)
+	}
+
+	watcherSubroutine, err := subroutine.NewAPIBindingWatcherSubroutine(mcMgr, orgsClient, searchIndexClient, localMgr.GetConfig(), indexPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("create APIBindingWatcherSubroutine: %w", err)
 	}
@@ -56,6 +61,7 @@ func NewAPIBindingReconciler(log *logger.Logger, mcMgr mcmanager.Manager, indexP
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apiexports,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apis.kcp.io,resources=apiresourceschemas,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core.platform-mesh.io,resources=accountinfos,verbs=get;list;watch
+// +kubebuilder:rbac:groups=search.platform-mesh.io,resources=searchconfigs,verbs=get;list;watch
 
 // Reconcile handles APIBinding reconciliation
 func (r *APIBindingReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
