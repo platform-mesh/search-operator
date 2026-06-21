@@ -9,7 +9,7 @@ require (
 	github.com/openfga/api/proto v0.0.0-20260319214821-f153694bfc20
 	github.com/opensearch-project/opensearch-go/v4 v4.6.0
 	github.com/platform-mesh/account-operator v0.14.57
-	github.com/platform-mesh/golang-commons v0.17.10
+	github.com/platform-mesh/golang-commons v0.17.11
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	github.com/vrischmann/envconfig v1.4.1
@@ -64,7 +64,7 @@ require (
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/sosodev/duration v1.4.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
-	github.com/vektah/gqlparser/v2 v2.5.33 // indirect
+	github.com/vektah/gqlparser/v2 v2.5.34 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
